@@ -1,0 +1,25 @@
+{
+  "_comment": "Official MOSDAC config.json for Meghdoot-AI. Common INSAT dataset IDs: 3RIMG_L1B_STD (INSAT-3DR Imager L1B), 3SIMG_L1B_STD (INSAT-3DS Imager L1B), 3RIMG_L2B_SST (SST), 3RIMG_L2B_OLR (OLR). Browse: https://mosdac.gov.in/catalog/satellite.php",
+
+  "user_credentials": {
+    "username/email": "vedanschi",
+    "password": "YOUR_PASSWORD_HERE"
+  },
+
+  "search_parameters": {
+    "datasetId": "3RIMG_L1B_STD",
+    "startTime": "2024-06-01",
+    "endTime": "2024-08-31",
+    "count": "",
+    "boundingBox": "66.0,6.0,100.0,38.0",
+    "gId": ""
+  },
+
+  "download_settings": {
+    "download_path": "data/raw",
+    "organize_by_date": true,
+    "skip_user_input": false,
+    "generate_error_logs": true,
+    "error_logs_dir": ""
+  }
+}

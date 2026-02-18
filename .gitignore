@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data
+data/raw/**/*.hdf5
+data/raw/**/*.h5
+data/processed/
+data/latents/
+*.nc
+*.tif
+
+# Model Checkpoints
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+
+# Logs
+logs/
+wandb/
+error_logs/
+*.log
+
+# MOSDAC credentials – NEVER commit real credentials
+# config.json contains user_credentials; keep it local
+config.json
+
+# Docker
+*.tar
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.key

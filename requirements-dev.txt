@@ -1,0 +1,17 @@
+# ─────────────────────────────────────────────────
+# Meghdoot-AI  –  Dev / Test Dependencies
+# ─────────────────────────────────────────────────
+# Install:  pip install -r requirements-dev.txt
+# ─────────────────────────────────────────────────
+
+pytest>=7.4
+pytest-cov>=4.1
+ruff>=0.1
+mypy>=1.7
+pre-commit>=3.6
+jupyter>=1.0
+ipykernel>=6.27
+
+# Baselines (optional)
+# pysteps>=1.8
+# tensorflow>=2.15

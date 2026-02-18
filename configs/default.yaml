@@ -1,0 +1,214 @@
+# ─────────────────────────────────────────────────
+# Meghdoot-AI  –  Master Configuration
+# ─────────────────────────────────────────────────
+
+project:
+  name: meghdoot-ai
+  seed: 42
+  device: cuda          # cuda | cpu | mps
+
+# ── Phase 1: Data Acquisition & Processing ──────
+data:
+  # MOSDAC INSAT-3DR / INSAT-3DS settings
+  # Browse dataset IDs at: https://mosdac.gov.in/catalog/satellite.php
+  # Official downloader: python mdapi.py (reads config.json at project root)
+  mosdac_config: "config.json"    # path to official MOSDAC config.json
+  dataset_ids:                    # MOSDAC datasetId values to download
+    - "3RIMG_L1B_STD"             # INSAT-3DR Imager L1B Standard
+    # - "3SIMG_L1B_STD"           # INSAT-3DS Imager L1B Standard
+  satellites: ["INSAT-3DR", "INSAT-3DS"]
+  channels: ["VIS", "NIR", "SWIR", "TIR1", "WV"]   # All 5 spectral bands
+  supported_formats: ["hdf5", "h5", "nc", "nc4"]  # HDF5 + NetCDF
+  date_range:
+    start: "2024-06-01"
+    end: "2024-08-31"             # 3-month monsoon window
+
+  # Regional crop (Indian Subcontinent bounding box)
+  region:
+    name: "india"
+    lat_min: 6.0
+    lat_max: 38.0
+    lon_min: 66.0
+    lon_max: 100.0
+
+  # Image sizing
+  raw_size: [2816, 2805]          # full-disk INSAT-3DR pixels
+  crop_size: [512, 512]           # after regional slice + resize
+
+  # Normalization
+  normalization:
+    method: "min_max"             # min_max → [-1, 1]
+    clip_percentile: [1, 99]      # robust outlier clipping
+
+  # Paths
+  paths:
+    raw: "data/raw"
+    processed: "data/processed"
+    latents: "data/latents"
+    metadata: "data/metadata"
+
+  # DataLoader
+  num_workers: 4
+  prefetch_factor: 2
+
+# ── Phase 2: VAE (Latent Encoder) ───────────────
+vae:
+  pretrained: "stabilityai/sd-vae-ft-mse"
+  latent_channels: 4
+  spatial_reduction: 8            # 512→64
+  fine_tune:
+    enabled: true
+    epochs: 30
+    batch_size: 8
+    learning_rate: 1.0e-5
+    weight_decay: 1.0e-4
+    # Hybrid loss: SSIM + MAE + VGG perceptual (tech-req spec)
+    ssim_weight: 0.5
+    mae_weight: 0.3
+    vgg_weight: 0.2
+  checkpoint_dir: "checkpoints/vae"
+
+# ── Channel Fusion (Multi-Spectral Integration) ────
+channel_fusion:
+  enabled: true
+  in_channels: 5                  # VIS, NIR, SWIR, TIR1, WV
+  out_channels: 3                 # fused output for RGB VAE input
+  mid_channels: 64                # intermediate conv feature width
+  channel_names: ["VIS", "NIR", "SWIR", "TIR1", "WV"]
+
+# ── Temporal Consistency Loss ───────────────────────
+temporal_loss:
+  enabled: true
+  warp_weight: 1.0                # optical-flow warped-frame L1
+  flow_smooth_weight: 0.1         # flow spatial smoothness
+  flow_mag_weight: 0.01           # flow magnitude regularisation
+  # Farneback optical flow parameters
+  farneback:
+    pyr_scale: 0.5
+    levels: 3
+    winsize: 15
+    iterations: 3
+    poly_n: 5
+    poly_sigma: 1.2
+
+# ── 3-Stage VAE Fine-Tuning ────────────────────────
+fine_tuning:
+  enabled: true
+  stages:
+    # Stage 1 – Domain Adaptation (generic satellite imagery)
+    domain_adaptation:
+      epochs: 10
+      learning_rate: 1.0e-4
+      weight_decay: 1.0e-4
+      ssim_weight: 0.5
+      mae_weight: 0.3
+      vgg_weight: 0.2
+      freeze_encoder: true        # train decoder only
+    # Stage 2 – INSAT Fine-Tuning (satellite-specific)
+    insat_finetune:
+      epochs: 15
+      learning_rate: 5.0e-5
+      weight_decay: 1.0e-4
+      ssim_weight: 0.4
+      mae_weight: 0.3
+      vgg_weight: 0.2
+      temporal_weight: 0.1        # add temporal consistency loss
+      unfreeze_encoder_layers: 2  # unfreeze last N encoder blocks
+    # Stage 3 – Regional Specialisation (India crops only)
+    regional:
+      epochs: 10
+      learning_rate: 1.0e-5
+      weight_decay: 1.0e-4
+      ssim_weight: 0.4
+      mae_weight: 0.2
+      vgg_weight: 0.2
+      temporal_weight: 0.1
+      physics_weight: 0.1         # mass-conservation loss
+  checkpoint_dir: "checkpoints/fine_tuning"
+
+# ── Phase 3: Latent Diffusion UNet ──────────────
+diffusion:
+  # Noise schedule
+  scheduler: "DDPMScheduler"
+  num_train_timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  beta_schedule: "squaredcos_cap_v2"
+
+  # UNet architecture
+  unet:
+    in_channels: 16               # 4 latent ch × (3 cond + 1 noisy) = 16
+    out_channels: 4
+    block_out_channels: [128, 256, 512, 512]
+    layers_per_block: 2
+    cross_attention_dim: 256      # temporal / metadata embedding
+    attention_head_dim: 8
+
+  # Conditioning
+  conditioning:
+    num_history_frames: 3         # use 3 past frames
+    strategy: "channel_concat"    # channel_concat | cross_attention
+
+  # Physics-aware loss
+  physics_loss:
+    enabled: true
+    mass_conservation_weight: 0.1
+    gradient_penalty_weight: 0.05
+
+  # Training
+  training:
+    epochs: 100
+    batch_size: 4
+    gradient_accumulation_steps: 4
+    learning_rate: 1.0e-4
+    lr_scheduler: "cosine"
+    warmup_steps: 500
+    ema_decay: 0.9999
+    mixed_precision: "fp16"
+    max_grad_norm: 1.0
+
+  # Inference
+  inference:
+    num_inference_steps: 50
+    guidance_scale: 1.0           # no classifier-free guidance for nowcasting
+    prediction_horizon_hours: 3
+
+  checkpoint_dir: "checkpoints/diffusion"
+
+# ── Phase 4: Evaluation & Baselines ─────────────
+evaluation:
+  metrics: ["ssim", "rmse", "csi", "psnr", "fid"]
+  csi_thresholds: [220, 240, 260]   # brightness-temp thresholds (K)
+  baselines:
+    convlstm:
+      enabled: true
+      hidden_dims: [64, 64, 64]
+      kernel_size: 3
+      num_layers: 3
+    pysteps:
+      enabled: true
+      method: "lucaskanade"
+  output_dir: "results/evaluation"
+
+# ── Phase 5: Deployment ─────────────────────────
+deployment:
+  api:
+    host: "0.0.0.0"
+    port: 8000
+    workers: 2
+  dashboard:
+    host: "0.0.0.0"
+    port: 8501
+  docker:
+    image_name: "meghdoot-ai"
+    image_tag: "latest"
+
+# ── Logging ─────────────────────────────────────
+logging:
+  wandb:
+    project: "meghdoot-ai"
+    entity: null                  # set your W&B username
+    log_every_n_steps: 50
+    log_images_every_n_epochs: 5
+  console:
+    level: "INFO"
