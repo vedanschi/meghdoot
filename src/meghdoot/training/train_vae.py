@@ -1,6 +1,6 @@
 """
-train_vae.py – Fine-tune the VAE on INSAT-3DR frames
-=====================================================
+train_vae.py – Fine-tune the VAE on INSAT-3DR/3DS frames
+=========================================================
 
 Usage
 -----
@@ -10,17 +10,46 @@ Usage
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
-from meghdoot.data.dataset import INSATSequenceDataset
 from meghdoot.models.vae import SatelliteVAE
 from meghdoot.utils.config import load_config
 from meghdoot.utils.helpers import seed_everything
 from meghdoot.utils.logging import get_logger, setup_wandb
 
 log = get_logger(__name__)
+
+
+class VAESingleFrameDataset(Dataset):
+    """
+    Loads individual .pt tensors for VAE training.
+    Unlike the Diffusion model, the VAE compresses single frames.
+    This dataset ensures 100% of the downloaded data is utilized.
+    """
+    def __init__(self, data_dir: str | Path) -> None:
+        self.data_dir = Path(data_dir)
+        
+        target_dir = self.data_dir / "vae_tensors"
+        if not target_dir.exists():
+            target_dir = self.data_dir
+            
+        self.files = sorted(target_dir.glob("*.pt"))
+        if not self.files:
+            log.warning(f"No .pt files found in {target_dir}")
+
+    def __len__(self) -> int:
+        return len(self.files)
+
+    def __getitem__(self, idx: int) -> dict:
+        fp = self.files[idx]
+        tensor = torch.load(fp, weights_only=True)
+        return {
+            "target": tensor,         # [2, 512, 512] Tensor
+            "timestamps": [fp.stem]   # Filename for latent caching
+        }
 
 
 def main() -> None:
@@ -34,12 +63,11 @@ def main() -> None:
     seed_everything(cfg["project"]["seed"])
     setup_wandb(cfg)
 
-    # Dataset (pixel-space)
-    dataset = INSATSequenceDataset(
-        data_dir=cfg["data"]["paths"]["processed"],
-        channel=cfg["data"]["channels"][0],
-        num_history=cfg["diffusion"]["conditioning"]["num_history_frames"],
+    # Use the VAE-specific single frame dataset
+    dataset = VAESingleFrameDataset(
+        data_dir=cfg["data"]["paths"]["processed"]
     )
+    
     dataloader = DataLoader(
         dataset,
         batch_size=cfg["vae"]["fine_tune"]["batch_size"],
@@ -53,6 +81,7 @@ def main() -> None:
     # Fine-tune
     if not args.cache_only:
         log.info("═══ Starting VAE Fine-Tuning ═══")
+        log.info(f"Training on {len(dataset)} individual satellite frames.")
         history = vae.fine_tune(dataloader)
 
         try:
@@ -75,10 +104,11 @@ def main() -> None:
         shuffle=False,
         num_workers=cfg["data"]["num_workers"],
     )
+    
+    # Removed obsolete 'channel' argument
     vae.cache_latents(
         cache_loader,
         out_dir=cfg["data"]["paths"]["latents"],
-        channel=cfg["data"]["channels"][0],
     )
 
     log.info("VAE pipeline complete ✓")
