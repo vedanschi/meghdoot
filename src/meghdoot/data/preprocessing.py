@@ -142,17 +142,10 @@ def crop_to_region(
         else:
             da = da.sel(lat=slice(lat_max, lat_min), lon=slice(lon_min, lon_max))
     else:
-        log.warning("No geo-coords – skipping regional crop")
+        log.warning("No geo-coords – falling back to static India pixel crop")
+        da = da.isel(y=slice(200, 1400), x=slice(1000, 2100))
+        
     return da
-
-
-def resize_array(arr: np.ndarray, target_size: tuple[int, int]) -> np.ndarray:
-    if arr.shape == target_size:
-        return arr
-    resized = cv2.resize(
-        arr, (target_size[1], target_size[0]), interpolation=cv2.INTER_LINEAR
-    )
-    return resized.astype(np.float32)
 
 
 def reproject_to_equirectangular(
