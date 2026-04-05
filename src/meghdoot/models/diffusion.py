@@ -217,11 +217,16 @@ class MeghdootDiffusion:
         # Temporal consistency loss (optical-flow warping between last cond & prediction)
         temporal_loss = torch.tensor(0.0, device=self.device)
         if self.temporal_loss_enabled:
-            temp_result = self.temporal_loss(
+            # Extract t-1 and t from the history sequence
+            frame_t_minus_1 = history_latents[:, -2]
+            frame_t = history_latents[:, -1]
+            
+            # Pass both frames so Farneback can calculate motion vectors
+            temporal_loss = self.temporal_loss(
                 predicted=predicted_x0,
-                previous=last_cond,
+                frame_t_minus_1=frame_t_minus_1,
+                frame_t=frame_t,
             )
-            temporal_loss = temp_result["temporal_loss"]
 
         total_loss = (
             mse_loss
