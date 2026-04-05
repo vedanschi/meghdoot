@@ -94,9 +94,16 @@ def _open_hdf5(filepath: Path, channel: str) -> xr.DataArray:
                 f"Available keys: {available}"
             )
         data = f[ds_key][:]
+        
+        # THE FIX: Remove dummy singleton dimensions (e.g., [1, 2816, 2805] -> [2816, 2805])
+        data = np.squeeze(data)
 
         lat = f[_LAT_KEY][:] if _LAT_KEY in f else None
         lon = f[_LON_KEY][:] if _LON_KEY in f else None
+        
+        # Squeeze lat/lon just in case they also have dummy dimensions
+        if lat is not None: lat = np.squeeze(lat)
+        if lon is not None: lon = np.squeeze(lon)
 
     if lat is not None and lon is not None:
         if lat.ndim == 2:
@@ -120,7 +127,6 @@ def _open_hdf5(filepath: Path, channel: str) -> xr.DataArray:
         log.warning(f"No lat/lon found in {filepath.name}; using pixel indices")
 
     return da
-
 
 def crop_to_region(
     da: xr.DataArray,
