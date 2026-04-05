@@ -10,8 +10,8 @@ Supported input formats:
 
 Pipeline:
   1. Open HDF5/NetCDF with xarray
-  2. Reproject using GDAL/Rasterio onto a consistent spatial grid
-  3. Regional crop to the Indian subcontinent
+  2. Handle 3D-to-2D dummy dimension squeezing
+  3. Regional crop to the Indian subcontinent (with static fallback)
   4. Resize to 512x512 with OpenCV (bilinear)
   5. Normalize 10-bit values to [-1, 1]
   6. Stack TIR1 and WV channels into a [2, 512, 512] PyTorch Tensor
@@ -77,9 +77,14 @@ def _open_netcdf(filepath: Path, channel: str) -> xr.DataArray:
             f"Available: {available}"
         )
 
-    da = ds[ds_key].astype(np.float32)
-    da.attrs["channel"] = channel
-    da.attrs["source_file"] = filepath.name
+    data = ds[ds_key].values
+    data = np.squeeze(data)
+    
+    da = xr.DataArray(
+        data.astype(np.float32),
+        dims=["y", "x"],
+        attrs={"channel": channel, "source_file": filepath.name},
+    )
     return da
 
 
@@ -94,14 +99,11 @@ def _open_hdf5(filepath: Path, channel: str) -> xr.DataArray:
                 f"Available keys: {available}"
             )
         data = f[ds_key][:]
-        
-        # THE FIX: Remove dummy singleton dimensions (e.g., [1, 2816, 2805] -> [2816, 2805])
         data = np.squeeze(data)
 
         lat = f[_LAT_KEY][:] if _LAT_KEY in f else None
         lon = f[_LON_KEY][:] if _LON_KEY in f else None
-        
-        # Squeeze lat/lon just in case they also have dummy dimensions
+
         if lat is not None: lat = np.squeeze(lat)
         if lon is not None: lon = np.squeeze(lon)
 
@@ -128,6 +130,7 @@ def _open_hdf5(filepath: Path, channel: str) -> xr.DataArray:
 
     return da
 
+
 def crop_to_region(
     da: xr.DataArray,
     lat_min: float,
@@ -144,8 +147,16 @@ def crop_to_region(
     else:
         log.warning("No geo-coords – falling back to static India pixel crop")
         da = da.isel(y=slice(200, 1400), x=slice(1000, 2100))
-        
     return da
+
+
+def resize_array(arr: np.ndarray, target_size: tuple[int, int]) -> np.ndarray:
+    if arr.shape == target_size:
+        return arr
+    resized = cv2.resize(
+        arr, (target_size[1], target_size[0]), interpolation=cv2.INTER_LINEAR
+    )
+    return resized.astype(np.float32)
 
 
 def reproject_to_equirectangular(
@@ -271,4 +282,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
