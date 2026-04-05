@@ -6,17 +6,16 @@ Uses HuggingFace ``diffusers.AutoencoderKL`` as the latent encoder.
 
 Workflow
 --------
-1. Load pre-trained VAE  (``stabilityai/sd-vae-ft-mse``)
+1. Load and adapt pre-trained VAE for 2-channel input (TIR1 + WV).
 2. Fine-tune on INSAT-3DR/3DS frames with a hybrid loss:
-   SSIM + MAE + VGG perceptual loss  (as per technical requirements)
-3. Cache all frames as 64×64 latent vectors for fast diffusion training
+   SSIM + MAE + VGG perceptual loss.
+3. Cache all frames as 64x64 latent vectors for fast diffusion training.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -25,7 +24,7 @@ from torch.utils.data import DataLoader
 from torchvision import models as tv_models
 from tqdm import tqdm
 
-from meghdoot.utils.helpers import ensure_dir, get_device, seed_everything
+from meghdoot.utils.helpers import ensure_dir, get_device
 from meghdoot.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -35,7 +34,7 @@ log = get_logger(__name__)
 class SSIMLoss(nn.Module):
     """Differentiable SSIM loss using a Gaussian window."""
 
-    def __init__(self, window_size: int = 11, channels: int = 1) -> None:
+    def __init__(self, window_size: int = 11, channels: int = 2) -> None:
         super().__init__()
         self.window_size = window_size
         self.channels = channels
@@ -81,13 +80,7 @@ class SSIMLoss(nn.Module):
 
 # ── VGG Perceptual Loss ───────────────────────────
 class VGGPerceptualLoss(nn.Module):
-    """VGG-based perceptual loss for visual realism.
-
-    Extracts features from intermediate VGG-19 layers and computes
-    L1 distance between reconstructed and original feature maps.
-    This encourages the VAE to preserve high-frequency cloud textures
-    that pixel-wise losses (MSE/MAE) tend to blur away.
-    """
+    """VGG-based perceptual loss for visual realism."""
 
     def __init__(self, layer_ids: tuple[int, ...] = (3, 8, 17, 26)) -> None:
         super().__init__()
@@ -98,11 +91,9 @@ class VGGPerceptualLoss(nn.Module):
             self.blocks.append(nn.Sequential(*list(vgg.children())[prev:lid + 1]))
             prev = lid + 1
 
-        # Freeze VGG entirely
         for p in self.parameters():
             p.requires_grad = False
 
-        # ImageNet normalisation constants
         self.register_buffer(
             "mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
         )
@@ -115,13 +106,28 @@ class VGGPerceptualLoss(nn.Module):
         return (x * 0.5 + 0.5 - self.mean) / self.std
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        x = self._normalize(x)
-        y = self._normalize(y)
+        """
+        Calculates perceptual loss.
+        x and y are 2-channel [TIR1, WV].
+        We map them to 3-channel RGB for VGG by repeating the TIR1 channel,
+        or adding a zero-channel to keep the dimensional sizes matching.
+        """
+        # Create a 3-channel proxy by appending a zero channel
+        # This allows the VGG network to process our 2-channel satellite data
+        z_x = torch.zeros((x.size(0), 1, x.size(2), x.size(3)), device=x.device, dtype=x.dtype)
+        z_y = torch.zeros((y.size(0), 1, y.size(2), y.size(3)), device=y.device, dtype=y.dtype)
+        
+        x_3c = torch.cat([x, z_x], dim=1)
+        y_3c = torch.cat([y, z_y], dim=1)
+
+        x_3c = self._normalize(x_3c)
+        y_3c = self._normalize(y_3c)
+        
         loss = torch.tensor(0.0, device=x.device)
         for block in self.blocks:
-            x = block(x)
-            y = block(y)
-            loss = loss + F.l1_loss(x, y)
+            x_3c = block(x_3c)
+            y_3c = block(y_3c)
+            loss = loss + F.l1_loss(x_3c, y_3c)
         return loss
 
 
@@ -134,65 +140,50 @@ class SatelliteVAE:
         self.vae_cfg = cfg["vae"]
         self.device = get_device(cfg["project"].get("device", "cuda"))
 
-        # Load pre-trained VAE
-        log.info(f"Loading VAE: {self.vae_cfg['pretrained']}")
+        log.info(f"Loading VAE: {self.vae_cfg['pretrained']} (Adapting for 2-channel Input)")
+        
+        # Load the base weights, but override the input/output channels
         self.vae = AutoencoderKL.from_pretrained(
             self.vae_cfg["pretrained"],
-            torch_dtype=torch.float32,
-        ).to(self.device)
+            ignore_mismatched_sizes=True, # Critical for adapting to 2-channel
+        )
+        
+        # Modify the first and last layers to accept/output 2 channels (TIR1+WV) instead of 3 (RGB)
+        # We copy the weights from the first 2 channels of the pre-trained model to preserve some learning
+        old_conv_in = self.vae.encoder.conv_in
+        new_conv_in = nn.Conv2d(2, old_conv_in.out_channels, kernel_size=3, stride=1, padding=1)
+        with torch.no_grad():
+            new_conv_in.weight.copy_(old_conv_in.weight[:, :2, :, :])
+            new_conv_in.bias.copy_(old_conv_in.bias)
+        self.vae.encoder.conv_in = new_conv_in
+        
+        old_conv_out = self.vae.decoder.conv_out
+        new_conv_out = nn.Conv2d(old_conv_out.in_channels, 2, kernel_size=3, stride=1, padding=1)
+        with torch.no_grad():
+            new_conv_out.weight.copy_(old_conv_out.weight[:2, :, :, :])
+            new_conv_out.bias.copy_(old_conv_out.bias[:2])
+        self.vae.decoder.conv_out = new_conv_out
 
-        # Hybrid loss components: SSIM + MAE + VGG perceptual
-        self.ssim_loss = SSIMLoss(channels=1).to(self.device)
+        self.vae = self.vae.to(self.device).to(torch.float32)
+
+        # Hybrid loss components
+        self.ssim_loss = SSIMLoss(channels=2).to(self.device)
         self.vgg_loss = VGGPerceptualLoss().to(self.device).eval()
 
-    # ── Encoding / Decoding ────────────────────────
     @torch.no_grad()
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """Encode pixel-space image to latent.
-
-        Parameters
-        ----------
-        x : Tensor [B, C, H, W]
-            Pixel images in [-1, 1].  For single-channel data,
-            the channel is repeated 3× to match the RGB VAE.
-
-        Returns
-        -------
-        Tensor [B, 4, H//8, W//8]
-        """
-        if x.shape[1] == 1:
-            x = x.repeat(1, 3, 1, 1)
+        """Encode 2-channel pixel-space image to latent."""
         posterior = self.vae.encode(x).latent_dist
         return posterior.sample() * self.vae.config.scaling_factor
 
     @torch.no_grad()
     def decode(self, z: torch.Tensor) -> torch.Tensor:
-        """Decode latent back to pixel space.
-
-        Returns
-        -------
-        Tensor [B, 3, H, W]   (take channel 0 for greyscale)
-        """
+        """Decode latent back to 2-channel pixel space."""
         z = z / self.vae.config.scaling_factor
         return self.vae.decode(z).sample
 
     # ── Fine-tune ──────────────────────────────────
     def fine_tune(self, dataloader: DataLoader) -> dict[str, list[float]]:
-        """Fine-tune the VAE decoder on INSAT satellite frames.
-
-        Uses a **hybrid loss** as specified in the technical requirements:
-          - SSIM  (Structural Similarity Index)
-          - MAE   (Mean Absolute Error)
-          - VGG   (Perceptual loss for visual realism)
-
-        The encoder is frozen; only the decoder is updated so that
-        cloud textures survive the 8× spatial compression.
-
-        Returns
-        -------
-        dict
-            Training history with ``"loss"``, ``"ssim"``, ``"mae"``, ``"vgg"`` lists.
-        """
         ft_cfg = self.vae_cfg["fine_tune"]
         epochs = ft_cfg["epochs"]
         lr = ft_cfg["learning_rate"]
@@ -200,9 +191,10 @@ class SatelliteVAE:
         mae_w = ft_cfg.get("mae_weight", 0.3)
         vgg_w = ft_cfg.get("vgg_weight", 0.2)
 
-        # Freeze encoder
-        for p in self.vae.encoder.parameters():
-            p.requires_grad = False
+        # Freeze encoder (except the new 2-channel input layer)
+        for name, p in self.vae.encoder.named_parameters():
+            if "conv_in" not in name:
+                p.requires_grad = False
         for p in self.vae.quant_conv.parameters():
             p.requires_grad = False
 
@@ -220,22 +212,18 @@ class SatelliteVAE:
             epoch_loss, epoch_ssim, epoch_mae, epoch_vgg = 0.0, 0.0, 0.0, 0.0
 
             for batch in tqdm(dataloader, desc=f"VAE Epoch {epoch}/{epochs}", leave=False):
-                # batch["target"] is [B, H, W]; add channel dim
-                x = batch["target"].unsqueeze(1).to(self.device)  # [B, 1, H, W]
-                x_rgb = x.repeat(1, 3, 1, 1)                      # [B, 3, H, W]
+                # Target is now already [B, 2, H, W]
+                x = batch["target"].to(self.device)
 
                 # Forward
-                posterior = self.vae.encode(x_rgb).latent_dist
+                posterior = self.vae.encode(x).latent_dist
                 z = posterior.sample()
-                recon = self.vae.decode(z).sample  # [B, 3, H, W]
-
-                # Greyscale proxy for SSIM/MAE (channel-0)
-                recon_grey = recon[:, :1, :, :]  # [B, 1, H, W]
+                recon = self.vae.decode(z).sample
 
                 # ── Hybrid loss: SSIM + MAE + VGG perceptual ──
-                loss_ssim = self.ssim_loss(recon_grey, x)
-                loss_mae = F.l1_loss(recon_grey, x)
-                loss_vgg = self.vgg_loss(recon, x_rgb)
+                loss_ssim = self.ssim_loss(recon, x)
+                loss_mae = F.l1_loss(recon, x)
+                loss_vgg = self.vgg_loss(recon, x)
 
                 loss = ssim_w * loss_ssim + mae_w * loss_mae + vgg_w * loss_vgg
 
@@ -260,7 +248,6 @@ class SatelliteVAE:
                 f"SSIM={epoch_ssim/n:.5f}  MAE={epoch_mae/n:.5f}  VGG={epoch_vgg/n:.5f}"
             )
 
-            # Checkpoint every 5 epochs
             if epoch % 5 == 0:
                 self._save_checkpoint(epoch)
 
@@ -270,7 +257,9 @@ class SatelliteVAE:
     def _save_checkpoint(self, epoch: int, tag: str | None = None) -> None:
         ckpt_dir = ensure_dir(self.vae_cfg["checkpoint_dir"])
         name = f"vae_epoch{epoch}.pt" if tag is None else f"vae_{tag}.pt"
-        self.vae.save_pretrained(ckpt_dir / name)
+        
+        # Save the full model state dict since we altered the architecture
+        torch.save(self.vae.state_dict(), ckpt_dir / name)
         log.info(f"  ↳ saved checkpoint → {ckpt_dir / name}")
 
     # ── Latent Caching ─────────────────────────────
@@ -279,43 +268,23 @@ class SatelliteVAE:
         self,
         dataloader: DataLoader,
         out_dir: str | Path,
-        channel: str = "TIR1",
     ) -> int:
-        """Encode the entire dataset and save latent vectors to disk.
-
-        This is the **critical speed optimisation**: once cached, the
-        diffusion training loop skips the VAE encoder entirely.
-
-        Parameters
-        ----------
-        dataloader : DataLoader
-            Yields dicts with ``"target"`` (pixel frames) and ``"timestamps"``.
-        out_dir : str or Path
-            Root directory for saved latents.
-        channel : str
-            Sub-directory name.
-
-        Returns
-        -------
-        int
-            Number of latent files written.
-        """
         self.vae.eval()
-        save_dir = ensure_dir(Path(out_dir) / channel)
+        save_dir = ensure_dir(Path(out_dir) / "stacked_tensors")
         count = 0
 
         for batch in tqdm(dataloader, desc="Caching latents"):
-            x = batch["target"].unsqueeze(1).to(self.device)
-            x_rgb = x.repeat(1, 3, 1, 1)
+            x = batch["target"].to(self.device)
 
-            posterior = self.vae.encode(x_rgb).latent_dist
+            posterior = self.vae.encode(x).latent_dist
             z = posterior.sample() * self.vae.config.scaling_factor  # [B, 4, 64, 64]
 
             timestamps = batch["timestamps"]
-            # timestamps is list of lists; take the last (target) name
+            
             for i in range(z.size(0)):
-                name = timestamps[-1][i] if isinstance(timestamps[-1], list) else timestamps[-1]
-                np.save(save_dir / f"{name}.npy", z[i].cpu().numpy())
+                name = timestamps[i]
+                # Save as PyTorch tensor, not Numpy
+                torch.save(z[i].clone().cpu(), save_dir / f"{name}.pt")
                 count += 1
 
         log.info(f"Cached {count} latent tensors → {save_dir}")
