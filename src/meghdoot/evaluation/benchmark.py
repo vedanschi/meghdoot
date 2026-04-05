@@ -41,9 +41,10 @@ def evaluate_meghdoot(
     device: torch.device,
     n_samples: int = 50,
 ) -> dict[str, float]:
-    """Evaluate the Meghdoot-AI diffusion model."""
+    """Evaluate the Meghdoot-AI diffusion model on the primary TIR1 channel."""
     metrics_list = []
-    csi_thresholds = cfg["evaluation"].get("csi_thresholds", [220, 240, 260])
+    # Note: These should now represent 10-bit raw thresholds, not Kelvin
+    csi_thresholds = cfg["evaluation"].get("csi_thresholds", [600, 700, 800])
 
     for i in range(min(n_samples, len(dataset))):
         sample = dataset[i]
@@ -52,12 +53,14 @@ def evaluate_meghdoot(
         history = sample["history"].unsqueeze(0).to(device)
         pred_latent = diffusion.sample(history, num_inference_steps=50)
 
-        # Decode to pixel space
+        # Decode to pixel space [B, 2, H, W]
         pred_pixel = vae.decode(pred_latent)
+        
+        # Extract Channel 0 (TIR1) for metrics
         pred_np = pred_pixel[0, 0].cpu().numpy()
-
-        # Ground truth (pixel)
-        gt_np = pixel_sample["target"].numpy()
+        
+        # Ground truth (pixel) [2, H, W] -> Extract Channel 0 (TIR1)
+        gt_np = pixel_sample["target"][0].numpy()
 
         metrics = compute_all_metrics(pred_np, gt_np, csi_thresholds=csi_thresholds)
         metrics_list.append(metrics)
@@ -77,10 +80,10 @@ def evaluate_convlstm(
     ckpt_path: str | None = None,
     n_samples: int = 50,
 ) -> dict[str, float]:
-    """Evaluate the ConvLSTM baseline."""
+    """Evaluate the ConvLSTM baseline on the primary TIR1 channel."""
     eval_cfg = cfg["evaluation"]["baselines"]["convlstm"]
     model = ConvLSTMPredictor(
-        in_channels=1,
+        in_channels=2, # Updated for 2-channel tensors
         hidden_dims=eval_cfg["hidden_dims"],
         kernel_size=eval_cfg["kernel_size"],
     ).to(device)
@@ -90,15 +93,19 @@ def evaluate_convlstm(
 
     model.eval()
     metrics_list = []
-    csi_thresholds = cfg["evaluation"].get("csi_thresholds", [220, 240, 260])
+    csi_thresholds = cfg["evaluation"].get("csi_thresholds", [600, 700, 800])
 
     with torch.no_grad():
         for i in range(min(n_samples, len(dataset))):
             sample = dataset[i]
             history = sample["history"].unsqueeze(0).to(device)
+            
+            # Predict [1, 2, H, W]
             pred = model(history)
+            
+            # Extract Channel 0 (TIR1)
             pred_np = pred[0, 0].cpu().numpy()
-            gt_np = sample["target"].numpy()
+            gt_np = sample["target"][0].numpy()
 
             metrics = compute_all_metrics(pred_np, gt_np, csi_thresholds=csi_thresholds)
             metrics_list.append(metrics)
@@ -115,11 +122,7 @@ def generate_comparison_video(
     ground_truths: list[np.ndarray],
     output_path: str | Path,
 ) -> None:
-    """Generate a side-by-side comparison grid saved as individual PNG frames.
-
-    These can be stitched into a video with ffmpeg:
-        ffmpeg -r 5 -i frame_%04d.png -vcodec libx264 comparison.mp4
-    """
+    """Generate a side-by-side comparison grid saved as individual PNG frames."""
     output_path = ensure_dir(Path(output_path))
 
     for i, (mg, cl, gt) in enumerate(zip(meghdoot_preds, convlstm_preds, ground_truths)):
@@ -158,17 +161,13 @@ def main() -> None:
     device = get_device(cfg["project"].get("device", "cuda"))
     out_dir = ensure_dir(cfg["evaluation"]["output_dir"])
 
-    channel = cfg["data"]["channels"][0]
-
-    # Datasets
+    # Datasets (Removed obsolete channel argument)
     pixel_dataset = INSATSequenceDataset(
         data_dir=cfg["data"]["paths"]["processed"],
-        channel=channel,
         num_history=cfg["diffusion"]["conditioning"]["num_history_frames"],
     )
     latent_dataset = LatentSequenceDataset(
         latent_dir=cfg["data"]["paths"]["latents"],
-        channel=channel,
         num_history=cfg["diffusion"]["conditioning"]["num_history_frames"],
     )
 

@@ -59,7 +59,7 @@ class ConvLSTMPredictor(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = 1,
+        in_channels: int = 2,  # Updated for TIR1 + WV
         hidden_dims: Sequence[int] = (64, 64, 64),
         kernel_size: int = 3,
     ):
@@ -120,22 +120,7 @@ def pysteps_forecast(
     n_leadtimes: int = 1,
     method: str = "lucaskanade",
 ) -> np.ndarray:
-    """Generate nowcast using PySTEPS optical flow.
-
-    Parameters
-    ----------
-    frames : ndarray [T, H, W]
-        Input sequence (at least 2 frames for motion estimation).
-    n_leadtimes : int
-        Number of future frames to predict.
-    method : str
-        Optical flow method ("lucaskanade").
-
-    Returns
-    -------
-    ndarray [n_leadtimes, H, W]
-        Predicted frames.
-    """
+    """Generate nowcast using PySTEPS optical flow."""
     try:
         from pysteps.motion.lucaskanade import dense_lucaskanade
         from pysteps.nowcasts.extrapolation import forecast as extrap_forecast

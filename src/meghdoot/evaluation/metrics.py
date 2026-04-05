@@ -16,15 +16,7 @@ from skimage.metrics import structural_similarity as sk_ssim
 
 
 def ssim(pred: np.ndarray, target: np.ndarray, data_range: float = 2.0) -> float:
-    """Structural Similarity Index.
-
-    Parameters
-    ----------
-    pred, target : ndarray [H, W]
-        Images in [-1, 1].
-    data_range : float
-        Dynamic range (2.0 for [-1, 1] normalised data).
-    """
+    """Structural Similarity Index."""
     return float(sk_ssim(pred, target, data_range=data_range))
 
 
@@ -44,30 +36,27 @@ def psnr(pred: np.ndarray, target: np.ndarray, data_range: float = 2.0) -> float
 def csi(
     pred: np.ndarray,
     target: np.ndarray,
-    threshold: float = 240.0,
-    denorm_range: tuple[float, float] = (180.0, 320.0),
+    threshold_raw: float = 800.0, 
 ) -> float:
     """Critical Success Index (Threat Score) for intensity events.
 
-    Binarises predictions: "event" = brightness temp **below** threshold
-    (lower BT → deeper convection → more intense weather).
+    Binarises predictions based on 10-bit raw counts.
+    (Note: Adjust threshold_raw based on what corresponds to heavy convection 
+    in your specific 10-bit INSAT calibration).
 
     Parameters
     ----------
     pred, target : ndarray [H, W]
         Normalised images in [-1, 1].
-    threshold : float
-        Brightness temperature threshold (Kelvin) for defining an event.
-    denorm_range : tuple
-        (T_min, T_max) used during normalisation, to convert back to Kelvin.
+    threshold_raw : float
+        10-bit Raw count threshold (0-1023) for defining an event.
     """
-    # De-normalise from [-1,1] to Kelvin
-    t_min, t_max = denorm_range
-    pred_k = (pred + 1) / 2 * (t_max - t_min) + t_min
-    target_k = (target + 1) / 2 * (t_max - t_min) + t_min
+    # De-normalise from [-1,1] back to 10-bit raw counts (0-1023)
+    pred_raw = (pred + 1.0) * 511.5
+    target_raw = (target + 1.0) * 511.5
 
-    pred_event = pred_k < threshold
-    tgt_event = target_k < threshold
+    pred_event = pred_raw > threshold_raw
+    tgt_event = target_raw > threshold_raw
 
     hits = np.sum(pred_event & tgt_event)
     misses = np.sum(~pred_event & tgt_event)
@@ -84,13 +73,7 @@ def compute_all_metrics(
     target: np.ndarray,
     csi_thresholds: list[float] | None = None,
 ) -> dict[str, float]:
-    """Compute all metrics in one call.
-
-    Returns
-    -------
-    dict
-        Keys: ``ssim``, ``rmse``, ``psnr``, ``csi_<threshold>`` for each threshold.
-    """
+    """Compute all metrics in one call."""
     results = {
         "ssim": ssim(pred, target),
         "rmse": rmse(pred, target),
@@ -99,6 +82,6 @@ def compute_all_metrics(
 
     if csi_thresholds:
         for t in csi_thresholds:
-            results[f"csi_{int(t)}"] = csi(pred, target, threshold=t)
+            results[f"csi_{int(t)}"] = csi(pred, target, threshold_raw=t)
 
     return results
