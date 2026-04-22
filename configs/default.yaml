@@ -11,17 +11,16 @@ project:
 data:
   # MOSDAC INSAT-3DR / INSAT-3DS settings
   # Browse dataset IDs at: https://mosdac.gov.in/catalog/satellite.php
-  # Official downloader: python mdapi.py (reads config.json at project root)
   mosdac_config: "config.json"    # path to official MOSDAC config.json
   dataset_ids:                    # MOSDAC datasetId values to download
-    - "3RIMG_L1B_STD"             # INSAT-3DR Imager L1B Standard
-    # - "3SIMG_L1B_STD"           # INSAT-3DS Imager L1B Standard
+    - "3RIMG_L1C_SGP"             # INSAT-3DR Imager L1B Standard
+    # - "3SIMG_L1C_SGP"           # INSAT-3DS Imager L1B Standard
   satellites: ["INSAT-3DR", "INSAT-3DS"]
-  channels: ["VIS", "NIR", "SWIR", "TIR1", "WV"]   # All 5 spectral bands
+  channels: ["TIR1", "WV"]   # 2 spectral bands
   supported_formats: ["hdf5", "h5", "nc", "nc4"]  # HDF5 + NetCDF
   date_range:
-    start: "2024-06-01"
-    end: "2024-08-31"             # 3-month monsoon window
+    start: "2026-01-01"
+    end: "2026-03-31"             # 3-month window
 
   # Regional crop (Indian Subcontinent bounding box)
   region:
@@ -42,10 +41,10 @@ data:
 
   # Paths
   paths:
-    raw: "data/raw"
-    processed: "data/processed"
-    latents: "data/latents"
-    metadata: "data/metadata"
+    raw: "~/meghdoot_data/raw"
+    processed: "~/meghdoot_data/processed"
+    latents: "~/meghdoot_data/latents"
+    metadata: "~/meghdoot_data/metadata"
 
   # DataLoader
   num_workers: 4
@@ -71,10 +70,10 @@ vae:
 # ── Channel Fusion (Multi-Spectral Integration) ────
 channel_fusion:
   enabled: true
-  in_channels: 5                  # VIS, NIR, SWIR, TIR1, WV
-  out_channels: 3                 # fused output for RGB VAE input
-  mid_channels: 64                # intermediate conv feature width
-  channel_names: ["VIS", "NIR", "SWIR", "TIR1", "WV"]
+  in_channels: 2                  
+  out_channels: 3                 
+  mid_channels: 64                
+  channel_names: ["TIR1", "WV"]
 
 # ── Temporal Consistency Loss ───────────────────────
 temporal_loss:
