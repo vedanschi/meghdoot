@@ -33,6 +33,12 @@ log = get_logger(__name__)
 
 
 def main() -> None:
+    # --- AUTO-SYNC DATA FROM GCS TO NVME ---
+    local_data_path = "/home/jupyter/local_data"
+    if not os.path.exists(local_data_path):
+        log.info("Syncing latents from GCS to local NVMe...")
+        subprocess.run(["gsutil", "-m", "cp", "-r", "gs://meghdoot-satellite-data/latents/stacked_tensors", local_data_path], check=True)
+    # ----------------------------------------
     parser = argparse.ArgumentParser(description="Train Latent Diffusion Model")
     parser.add_argument("--config", default=None)
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
@@ -195,46 +201,34 @@ def _log_sample(model, dataset, device, epoch):
     try:
         import wandb
         import matplotlib.pyplot as plt
+        import torch
 
-        model.eval() # Set model to evaluation mode
+        model.eval()
         with torch.no_grad():
             sample = dataset[0]
             history = sample["history"].unsqueeze(0).to(device)
-            
-            # 1. Denoise in Latent Space
             latent_pred = model.sample(history, num_inference_steps=20)
             
-            # 2. DECODE: Convert latent -> pixel space
-            # This is the crucial step. We use the VAE to decode the latent tensor.
-            # Assuming 'model.vae' is the VAE instance used during training.
+            # DECODE: Convert latent -> pixel space
             pred_img = model.vae.decode(latent_pred).sample
-            
-            # Decode the ground truth for a fair comparison
             target_latent = sample["target"].unsqueeze(0).to(device)
             target_img = model.vae.decode(target_latent).sample
 
-            # 3. Visualization
-            # Normalize images to [0, 1] for matplotlib display
             def to_img(t):
-                t = t.detach().cpu()[0, 0] # Take first batch, first channel
+                t = t.detach().cpu()[0, 0]
                 return (t - t.min()) / (t.max() - t.min() + 1e-6)
 
             fig, axes = plt.subplots(1, 2, figsize=(10, 5))
             axes[0].imshow(to_img(target_img), cmap="gray")
             axes[0].set_title("Ground Truth (Decoded)")
-            
             axes[1].imshow(to_img(pred_img), cmap="gray")
             axes[1].set_title("Predicted (Decoded)")
             
-            for ax in axes:
-                ax.axis("off")
+            for ax in axes: ax.axis("off")
             plt.suptitle(f"Epoch {epoch}")
-            plt.tight_layout()
-
             wandb.log({f"diffusion/sample_epoch{epoch}": wandb.Image(fig)})
             plt.close(fig)
-            
-        model.train() # Set back to training mode
+        model.train()
     except Exception as e:
         log.error(f"Visualization failed: {e}")
 
