@@ -17,6 +17,8 @@ Usage
 from __future__ import annotations
 
 import argparse
+import os 
+import subprocess
 import math
 
 import torch
@@ -34,10 +36,10 @@ log = get_logger(__name__)
 
 def main() -> None:
     # --- AUTO-SYNC DATA FROM GCS TO NVME ---
-    local_data_path = "/home/jupyter/local_data"
-    if not os.path.exists(local_data_path):
-        log.info("Syncing latents from GCS to local NVMe...")
-        subprocess.run(["gsutil", "-m", "cp", "-r", "gs://meghdoot-satellite-data/latents/stacked_tensors", local_data_path], check=True)
+    #local_data_path = "/home/jupyter/local_data"
+    #if not os.path.exists(local_data_path):
+        #log.info("Syncing latents from GCS to local NVMe...")
+       # subprocess.run(["gsutil", "-m", "cp", "-r", "gs://meghdoot-satellite-data/latents/stacked_tensors", local_data_path], check=True)
     # ----------------------------------------
     parser = argparse.ArgumentParser(description="Train Latent Diffusion Model")
     parser.add_argument("--config", default=None)
@@ -203,7 +205,7 @@ def _log_sample(model, dataset, device, epoch):
         import matplotlib.pyplot as plt
         import torch
 
-        model.eval()
+        model.unet.eval()
         with torch.no_grad():
             sample = dataset[0]
             history = sample["history"].unsqueeze(0).to(device)
@@ -228,7 +230,7 @@ def _log_sample(model, dataset, device, epoch):
             plt.suptitle(f"Epoch {epoch}")
             wandb.log({f"diffusion/sample_epoch{epoch}": wandb.Image(fig)})
             plt.close(fig)
-        model.train()
+        model.unet.train()
     except Exception as e:
         log.error(f"Visualization failed: {e}")
 
