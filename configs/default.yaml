@@ -43,7 +43,7 @@ data:
   paths:
     raw: "/home/jupyter/meghdoot_data/raw"
     processed: "/home/jupyter/meghdoot_data/processed"
-    latents: "/home/jupyter/meghdoot_data/latents/stacked_tensors"
+    latents: "/tmp/local_latents"
     metadata: "~/meghdoot_data/metadata"
 
   # DataLoader
