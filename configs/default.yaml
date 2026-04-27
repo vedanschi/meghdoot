@@ -40,7 +40,7 @@ data:
     clip_percentile: [1, 99]      # robust outlier clipping
 
   # Paths
- paths:
+  paths:
     raw: "/home/jupyter/meghdoot_data/raw"
     processed: "/home/jupyter/meghdoot_data/processed"
     latents: "/home/jupyter/local_data" # Matches the sync path above
