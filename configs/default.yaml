@@ -163,7 +163,7 @@ diffusion:
     lr_scheduler: "cosine"
     warmup_steps: 500
     ema_decay: 0.9999
-    mixed_precision: "fp16"
+    mixed_precision: "fp32"
     max_grad_norm: 1.0
 
   # Inference
