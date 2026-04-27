@@ -137,6 +137,13 @@ def main() -> None:
 
         n = len(dataloader)
         avg_loss = epoch_loss / n
+        
+        # 1. FATAL CRASH CHECK: Stop immediately if loss becomes NaN
+        import math
+        if not math.isfinite(avg_loss):
+            log.error(f"Loss exploded (NaN) at epoch {epoch}. Stopping to protect weights.")
+            break
+
         avg_mse = epoch_mse / n
         avg_phys = epoch_phys / n
         avg_ssim = epoch_ssim / n
@@ -164,9 +171,15 @@ def main() -> None:
         except Exception:
             pass
 
-        # Checkpoint
-        if epoch % 10 == 0 or epoch == t_cfg["epochs"]:
-            model.save(cfg["diffusion"]["checkpoint_dir"], epoch)
+        # 2. CHECKPOINT EVERY EPOCH: Pass optimizer and scheduler states
+        save_freq = t_cfg.get("save_every_n_epochs", 1)
+        if epoch % save_freq == 0 or epoch == t_cfg["epochs"]:
+            model.save(
+                cfg["diffusion"]["checkpoint_dir"], 
+                epoch, 
+                optimizer=optimizer, 
+                lr_scheduler=scheduler
+            )
 
         # Sample visualization every N epochs
         log_img_every = cfg.get("logging", {}).get("wandb", {}).get(
