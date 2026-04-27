@@ -60,13 +60,9 @@ def main() -> None:
         drop_last=True,
     )
 
-    # ── Model ─────────────────────────────────────
+# ── Model & Optimiser ─────────────────────────
     model = MeghdootDiffusion(cfg)
-    start_epoch = 0
-    if args.resume:
-        start_epoch = model.load(args.resume)
-
-    # ── Optimiser ─────────────────────────────────
+    
     optimizer = torch.optim.AdamW(
         model.unet.parameters(),
         lr=t_cfg["learning_rate"],
@@ -83,6 +79,11 @@ def main() -> None:
         return 0.5 * (1 + math.cos(math.pi * progress))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    # Now load the checkpoint and apply states to the optimizer/scheduler
+    start_epoch = 0
+    if args.resume:
+        start_epoch = model.load(args.resume, optimizer=optimizer, lr_scheduler=scheduler)
 
     # Mixed precision
     use_amp = t_cfg.get("mixed_precision", "fp16") == "fp16" and device.type == "cuda"
