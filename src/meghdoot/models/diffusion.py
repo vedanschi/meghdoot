@@ -26,6 +26,7 @@ from tqdm import tqdm
 
 from meghdoot.utils.helpers import ensure_dir, get_device
 from meghdoot.utils.logging import get_logger
+from meghdoot.models.vae import SSIMLoss
 from meghdoot.models.temporal_loss import TemporalConsistencyLoss
 
 log = get_logger(__name__)
