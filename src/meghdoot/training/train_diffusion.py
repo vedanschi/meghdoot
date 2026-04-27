@@ -192,29 +192,52 @@ def main() -> None:
 
 
 def _log_sample(model, dataset, device, epoch):
-    """Generate a sample prediction and log to W&B."""
+    """Generate a sample prediction, decode it, and log to W&B."""
     try:
         import wandb
         import matplotlib.pyplot as plt
 
-        sample = dataset[0]
-        history = sample["history"].unsqueeze(0).to(device)
-        pred = model.sample(history, num_inference_steps=20)
+        model.eval() # Set model to evaluation mode
+        with torch.no_grad():
+            sample = dataset[0]
+            history = sample["history"].unsqueeze(0).to(device)
+            
+            # 1. Denoise in Latent Space
+            latent_pred = model.sample(history, num_inference_steps=20)
+            
+            # 2. DECODE: Convert latent -> pixel space
+            # This is the crucial step. We use the VAE to decode the latent tensor.
+            # Assuming 'model.vae' is the VAE instance used during training.
+            pred_img = model.vae.decode(latent_pred).sample
+            
+            # Decode the ground truth for a fair comparison
+            target_latent = sample["target"].unsqueeze(0).to(device)
+            target_img = model.vae.decode(target_latent).sample
 
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-        axes[0].imshow(sample["target"][0].numpy(), cmap="gray")
-        axes[0].set_title("Ground Truth (latent ch-0)")
-        axes[1].imshow(pred[0, 0].cpu().numpy(), cmap="gray")
-        axes[1].set_title("Predicted (latent ch-0)")
-        for ax in axes:
-            ax.axis("off")
-        plt.suptitle(f"Epoch {epoch}")
-        plt.tight_layout()
+            # 3. Visualization
+            # Normalize images to [0, 1] for matplotlib display
+            def to_img(t):
+                t = t.detach().cpu()[0, 0] # Take first batch, first channel
+                return (t - t.min()) / (t.max() - t.min() + 1e-6)
 
-        wandb.log({f"diffusion/sample_epoch{epoch}": wandb.Image(fig)})
-        plt.close(fig)
-    except Exception:
-        pass
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+            axes[0].imshow(to_img(target_img), cmap="gray")
+            axes[0].set_title("Ground Truth (Decoded)")
+            
+            axes[1].imshow(to_img(pred_img), cmap="gray")
+            axes[1].set_title("Predicted (Decoded)")
+            
+            for ax in axes:
+                ax.axis("off")
+            plt.suptitle(f"Epoch {epoch}")
+            plt.tight_layout()
+
+            wandb.log({f"diffusion/sample_epoch{epoch}": wandb.Image(fig)})
+            plt.close(fig)
+            
+        model.train() # Set back to training mode
+    except Exception as e:
+        log.error(f"Visualization failed: {e}")
 
 
 if __name__ == "__main__":
