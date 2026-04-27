@@ -286,21 +286,39 @@ class MeghdootDiffusion:
         return x_t
 
     # ── Checkpointing ──────────────────────────────
-    def save(self, path: str | Path, epoch: int) -> None:
+    def save(self, path: str | Path, epoch: int, optimizer=None, lr_scheduler=None) -> None:
         path = ensure_dir(Path(path))
         ckpt = {
             "epoch": epoch,
             "unet": self.unet.state_dict(),
             "ema": self.ema.state_dict(),
-            "scheduler": self.scheduler.config,
+            "scheduler": self.scheduler.config, # Noise scheduler config
         }
+        if optimizer is not None:
+            ckpt["optimizer"] = optimizer.state_dict()
+        if lr_scheduler is not None:
+            ckpt["lr_scheduler"] = lr_scheduler.state_dict()
+            
         torch.save(ckpt, path / f"diffusion_epoch{epoch}.pt")
         log.info(f"Saved diffusion checkpoint → epoch {epoch}")
 
-    def load(self, ckpt_path: str | Path) -> int:
+    def load(self, ckpt_path: str | Path, optimizer=None, lr_scheduler=None) -> int:
+        ckpt_path = Path(ckpt_path)
+        if not ckpt_path.exists():
+            log.warning(f"Checkpoint {ckpt_path} not found. Starting from scratch.")
+            return 0
+            
         ckpt = torch.load(ckpt_path, map_location=self.device)
         self.unet.load_state_dict(ckpt["unet"])
+        
         self.ema = EMAModel(self.unet)
-        self.ema.shadow = ckpt["ema"]
+        if "ema" in ckpt:
+            self.ema.shadow = ckpt["ema"]
+            
+        if optimizer is not None and "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        if lr_scheduler is not None and "lr_scheduler" in ckpt:
+            lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
+            
         log.info(f"Loaded diffusion checkpoint (epoch {ckpt['epoch']})")
         return ckpt["epoch"]
