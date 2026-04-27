@@ -3,14 +3,12 @@
 from meghdoot.models.vae import SatelliteVAE, SSIMLoss, VGGPerceptualLoss
 from meghdoot.models.diffusion import MeghdootDiffusion, MassConservationLoss, EMAModel
 from meghdoot.models.channel_fusion import (
-    ChannelFusionNet,
-    MultiChannelPreprocessor,
-    SpectralAttention,
+    ChannelIntegrationLayer,
+    ChannelAttention,
+    MultiChannelINSATDataset,
 )
 from meghdoot.models.temporal_loss import (
     TemporalConsistencyLoss,
-    OpticalFlowEstimator,
-    WarpedFrameLoss,
 )
 
 __all__ = [
@@ -20,10 +18,8 @@ __all__ = [
     "MeghdootDiffusion",
     "MassConservationLoss",
     "EMAModel",
-    "ChannelFusionNet",
-    "MultiChannelPreprocessor",
-    "SpectralAttention",
+    "ChannelIntegrationLayer",
+    "ChannelAttention",
+    "MultiChannelINSATDataset",
     "TemporalConsistencyLoss",
-    "OpticalFlowEstimator",
-    "WarpedFrameLoss",
 ]
