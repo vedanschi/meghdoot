@@ -22,6 +22,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers import DDPMScheduler, UNet2DModel
+from diffusers.configuration_utils import FrozenDict
 from tqdm import tqdm
 
 from meghdoot.utils.helpers import ensure_dir, get_device
@@ -30,6 +31,7 @@ from meghdoot.models.vae import SSIMLoss
 from meghdoot.models.temporal_loss import TemporalConsistencyLoss
 
 log = get_logger(__name__)
+torch.serialization.add_safe_globals([FrozenDict])
 
 
 # ── Physics-Aware Loss ─────────────────────────────
@@ -309,7 +311,9 @@ class MeghdootDiffusion:
             log.warning(f"Checkpoint {ckpt_path} not found. Starting from scratch.")
             return 0
             
-        ckpt = torch.load(ckpt_path, map_location=self.device)
+        # CHANGED: Added weights_only=False
+        ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
+        
         self.unet.load_state_dict(ckpt["unet"])
         
         self.ema = EMAModel(self.unet)
