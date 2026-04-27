@@ -139,7 +139,6 @@ def main() -> None:
         avg_loss = epoch_loss / n
         
         # 1. FATAL CRASH CHECK: Stop immediately if loss becomes NaN
-        import math
         if not math.isfinite(avg_loss):
             log.error(f"Loss exploded (NaN) at epoch {epoch}. Stopping to protect weights.")
             break
