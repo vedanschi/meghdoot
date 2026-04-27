@@ -78,6 +78,7 @@ channel_fusion:
 # ── Temporal Consistency Loss ───────────────────────
 temporal_loss:
   enabled: true
+  temporal_weight: 0.005
   warp_weight: 1.0                # optical-flow warped-frame L1
   flow_smooth_weight: 0.1         # flow spatial smoothness
   flow_mag_weight: 0.01           # flow magnitude regularisation
@@ -151,8 +152,8 @@ diffusion:
   # Physics-aware loss
   physics_loss:
     enabled: true
-    mass_conservation_weight: 0.1
-    gradient_penalty_weight: 0.05
+    mass_conservation_weight: 0.001
+    gradient_penalty_weight: 0.001
 
   # Training
   training:
