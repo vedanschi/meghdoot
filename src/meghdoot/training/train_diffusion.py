@@ -197,43 +197,49 @@ def main() -> None:
 
     log.info("Diffusion training complete ✓")
 
-
 def _log_sample(model, dataset, device, epoch):
-    """Generate a sample prediction, decode it, and log to W&B."""
+    """Generate a sample prediction, decode it, and log directly to W&B."""
     try:
         import wandb
-        import matplotlib.pyplot as plt
         import torch
+        import numpy as np
+        from diffusers import AutoencoderKL
 
         model.unet.eval()
         with torch.no_grad():
             sample = dataset[0]
             history = sample["history"].unsqueeze(0).to(device)
+            # Use 20 steps for faster logging during training
             latent_pred = model.sample(history, num_inference_steps=20)
             
+            # FIX: Explicitly load the VAE for decoding
+            vae_path = model.cfg["vae"]["pretrained"]
+            vae = AutoencoderKL.from_pretrained(vae_path).to(device).eval()
+
             # DECODE: Convert latent -> pixel space
-            pred_img = model.vae.decode(latent_pred).sample
+            pred_img = vae.decode(latent_pred).sample
             target_latent = sample["target"].unsqueeze(0).to(device)
-            target_img = model.vae.decode(target_latent).sample
+            target_img = vae.decode(target_latent).sample
 
-            def to_img(t):
-                t = t.detach().cpu()[0, 0]
-                return (t - t.min()) / (t.max() - t.min() + 1e-6)
+            # Normalize to [0, 255] for grayscale W&B logging
+            def to_uint8(t):
+                t = t.detach().cpu()[0, 0].numpy()
+                t = (t - t.min()) / (t.max() - t.min() + 1e-6)
+                return (t * 255).astype(np.uint8)
 
-            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-            axes[0].imshow(to_img(target_img), cmap="gray")
-            axes[0].set_title("Ground Truth (Decoded)")
-            axes[1].imshow(to_img(pred_img), cmap="gray")
-            axes[1].set_title("Predicted (Decoded)")
+            # Log side-by-side grayscale images directly to W&B
+            wandb.log({
+                f"diffusion/epoch_{epoch}_target": wandb.Image(to_uint8(target_img), caption=f"Epoch {epoch} Ground Truth"),
+                f"diffusion/epoch_{epoch}_pred": wandb.Image(to_uint8(pred_img), caption=f"Epoch {epoch} Prediction")
+            })
             
-            for ax in axes: ax.axis("off")
-            plt.suptitle(f"Epoch {epoch}")
-            wandb.log({f"diffusion/sample_epoch{epoch}": wandb.Image(fig)})
-            plt.close(fig)
+            # Free up GPU memory so the UNet can continue training safely
+            del vae
+            torch.cuda.empty_cache()
+
         model.unet.train()
     except Exception as e:
         log.error(f"Visualization failed: {e}")
-
 
 if __name__ == "__main__":
     main()
