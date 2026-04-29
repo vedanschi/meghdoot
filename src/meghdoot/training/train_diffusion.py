@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader
 
 from meghdoot.data.dataset import LatentSequenceDataset
 from meghdoot.models.diffusion import MeghdootDiffusion
+from meghdoot.models.vae import SatelliteVAE
 from meghdoot.utils.config import load_config
 from meghdoot.utils.helpers import seed_everything, get_device
 from meghdoot.utils.logging import get_logger, setup_wandb
@@ -109,8 +110,8 @@ def main() -> None:
         epoch_loss = 0.0
         epoch_mse = 0.0
         epoch_phys = 0.0
-        epoch_ssim = 0.0
-        epoch_mae = 0.0
+        epoch_latent_l1 = 0.0
+        epoch_temporal = 0.0
 
         optimizer.zero_grad()
 
@@ -140,8 +141,8 @@ def main() -> None:
             epoch_loss += losses["loss"].item()
             epoch_mse += losses["mse_loss"].item()
             epoch_phys += losses["physics_loss"].item()
-            epoch_ssim += losses["ssim_loss"].item()
-            epoch_mae += losses["mae_loss"].item()
+            epoch_latent_l1 += losses["latent_l1_loss"].item()
+            epoch_temporal += losses["temporal_loss"].item()
 
         n = len(dataloader)
         avg_loss = epoch_loss / n
@@ -153,13 +154,13 @@ def main() -> None:
 
         avg_mse = epoch_mse / n
         avg_phys = epoch_phys / n
-        avg_ssim = epoch_ssim / n
-        avg_mae = epoch_mae / n
+        avg_latent_l1 = epoch_latent_l1 / n
+        avg_temporal = epoch_temporal / n
 
         log.info(
             f"Epoch {epoch:3d}/{t_cfg['epochs']} │ "
             f"loss={avg_loss:.5f}  mse={avg_mse:.5f}  phys={avg_phys:.5f}  "
-            f"ssim={avg_ssim:.5f}  mae={avg_mae:.5f}  "
+            f"latent_l1={avg_latent_l1:.5f}  temporal={avg_temporal:.5f}  "
             f"lr={scheduler.get_last_lr()[0]:.2e}"
         )
 
@@ -170,8 +171,8 @@ def main() -> None:
                 "diffusion/loss": avg_loss,
                 "diffusion/mse": avg_mse,
                 "diffusion/physics": avg_phys,
-                "diffusion/ssim": avg_ssim,
-                "diffusion/mae": avg_mae,
+                "diffusion/latent_l1": avg_latent_l1,
+                "diffusion/temporal": avg_temporal,
                 "diffusion/lr": scheduler.get_last_lr()[0],
                 "diffusion/epoch": epoch,
             })
@@ -201,9 +202,7 @@ def _log_sample(model, dataset, device, epoch):
     """Generate a sample prediction, decode it, and log directly to W&B."""
     try:
         import wandb
-        import torch
         import numpy as np
-        from diffusers import AutoencoderKL
 
         model.unet.eval()
         with torch.no_grad():
@@ -211,15 +210,12 @@ def _log_sample(model, dataset, device, epoch):
             history = sample["history"].unsqueeze(0).to(device)
             # Use 20 steps for faster logging during training
             latent_pred = model.sample(history, num_inference_steps=20)
-            
-            # FIX: Explicitly load the VAE for decoding
-            vae_path = model.cfg["vae"]["pretrained"]
-            vae = AutoencoderKL.from_pretrained(vae_path).to(device).eval()
 
-            # DECODE: Convert latent -> pixel space
-            pred_img = vae.decode(latent_pred).sample
+            # Decode using project SatelliteVAE to preserve 2-channel adaptation + latent scaling
+            vae = SatelliteVAE(model.cfg).to(device).eval()
+            pred_img = vae.decode(latent_pred)
             target_latent = sample["target"].unsqueeze(0).to(device)
-            target_img = vae.decode(target_latent).sample
+            target_img = vae.decode(target_latent)
 
             # Normalize to [0, 255] for grayscale W&B logging
             def to_uint8(t):

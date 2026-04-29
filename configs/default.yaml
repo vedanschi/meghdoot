@@ -52,6 +52,7 @@ data:
 
 # ── Phase 2: VAE (Latent Encoder) ───────────────
 vae:
+  base_pretrained: "stabilityai/sd-vae-ft-mse"
   pretrained: "/home/jupyter/meghdoot_data/weights/vae/vae_final.pt"
   latent_channels: 4
   spatial_reduction: 8            # 512→64
@@ -77,7 +78,7 @@ channel_fusion:
 
 # ── Temporal Consistency Loss ───────────────────────
 temporal_loss:
-  enabled: true
+  enabled: false
   temporal_weight: 0.005
   warp_weight: 1.0                # optical-flow warped-frame L1
   flow_smooth_weight: 0.1         # flow spatial smoothness
@@ -148,6 +149,7 @@ diffusion:
   conditioning:
     num_history_frames: 3         # use 3 past frames
     strategy: "channel_concat"    # channel_concat | cross_attention
+    cond_dropout_prob: 0.15       # enables CFG-compatible conditional training
 
   # Physics-aware loss
   physics_loss:
@@ -166,11 +168,12 @@ diffusion:
     ema_decay: 0.9999
     mixed_precision: "fp32"
     max_grad_norm: 1.0
+    latent_l1_weight: 0.02        # small regularizer in latent space only
 
   # Inference
   inference:
     num_inference_steps: 50
-    guidance_scale: 1.0           # no classifier-free guidance for nowcasting
+    guidance_scale: 2.5           # use CFG to enforce geography conditioning
     prediction_horizon_hours: 3
 
   checkpoint_dir: "checkpoints/diffusion"
@@ -178,7 +181,7 @@ diffusion:
 # ── Phase 4: Evaluation & Baselines ─────────────
 evaluation:
   metrics: ["ssim", "rmse", "csi", "psnr", "fid"]
-  csi_thresholds: [220, 240, 260]   # brightness-temp thresholds (K)
+  csi_thresholds: [600, 700, 800]   # 10-bit raw thresholds (metrics.py expects raw)
   baselines:
     convlstm:
       enabled: true

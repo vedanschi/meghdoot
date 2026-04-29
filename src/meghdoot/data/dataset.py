@@ -97,6 +97,11 @@ class LatentSequenceDataset(Dataset):
         self.latent_dir = Path(latent_dir)
         self.num_history = num_history
 
+        # Support both direct latent_dir/*.pt and latent_dir/stacked_tensors/*.pt
+        target_dir = self.latent_dir / "stacked_tensors"
+        if target_dir.exists():
+            self.latent_dir = target_dir
+
         self.files = sorted(self.latent_dir.glob("*.pt"))
         if len(self.files) < num_history + 1:
             log.warning(f"Found {len(self.files)} latents, need {num_history + 1}")

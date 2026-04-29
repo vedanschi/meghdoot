@@ -27,7 +27,6 @@ from tqdm import tqdm
 
 from meghdoot.utils.helpers import ensure_dir, get_device
 from meghdoot.utils.logging import get_logger
-from meghdoot.models.vae import SSIMLoss
 from meghdoot.models.temporal_loss import TemporalConsistencyLoss
 
 log = get_logger(__name__)
@@ -131,10 +130,12 @@ class MeghdootDiffusion:
         self.physics_weight = self.diff_cfg["physics_loss"].get("mass_conservation_weight", 0.1)
         self.grad_penalty_weight = self.diff_cfg["physics_loss"].get("gradient_penalty_weight", 0.05)
 
-        # SSIM + MAE on latent x0 predictions (hybrid loss per tech spec)
-        self.ssim_loss = SSIMLoss(channels=unet_cfg["out_channels"]).to(self.device)
-        self.ssim_weight = self.diff_cfg.get("training", {}).get("ssim_weight", 0.1)
-        self.mae_weight = self.diff_cfg.get("training", {}).get("mae_weight", 0.1)
+        # Optional latent L1 regularizer (keep small; avoid pixel-structure losses in latent space)
+        self.latent_l1_weight = self.diff_cfg.get("training", {}).get("latent_l1_weight", 0.0)
+
+        # Conditioning dropout for CFG-style training (prevents conditional neglect)
+        cond_cfg = self.diff_cfg.get("conditioning", {})
+        self.cond_dropout_prob = cond_cfg.get("cond_dropout_prob", 0.1)
 
         # Temporal consistency loss (optical-flow-based)
         temp_cfg = cfg.get("temporal_loss", {})
@@ -180,6 +181,13 @@ class MeghdootDiffusion:
         # Flatten history: [B, 3, 4, 64, 64] → [B, 12, 64, 64]
         cond = history_latents.view(B, -1, *history_latents.shape[-2:])
 
+        # Conditioning dropout (classifier-free guidance training)
+        if self.cond_dropout_prob > 0:
+            keep_mask = (
+                torch.rand(B, 1, 1, 1, device=self.device) >= self.cond_dropout_prob
+            ).float()
+            cond = cond * keep_mask
+
         # Sample random timesteps
         timesteps = torch.randint(
             0, self.scheduler.config.num_train_timesteps,
@@ -213,9 +221,8 @@ class MeghdootDiffusion:
         dy = torch.diff(predicted_x0, dim=-2)
         grad_loss = (dx.abs().mean() + dy.abs().mean()) * self.grad_penalty_weight
 
-        # SSIM + MAE on latent x0 vs ground-truth (hybrid fidelity loss)
-        ssim_loss = self.ssim_loss(predicted_x0, target_latent)
-        mae_loss = F.l1_loss(predicted_x0, target_latent)
+        # Keep latent-space regularization simple and low-weight
+        latent_l1_loss = F.l1_loss(predicted_x0, target_latent)
 
         # Temporal consistency loss (optical-flow warping between last cond & prediction)
         temporal_loss = torch.tensor(0.0, device=self.device)
@@ -235,8 +242,7 @@ class MeghdootDiffusion:
             mse_loss
             + self.physics_weight * phys_loss
             + grad_loss
-            + self.ssim_weight * ssim_loss
-            + self.mae_weight * mae_loss
+            + self.latent_l1_weight * latent_l1_loss
             + (self.temporal_weight * temporal_loss if self.temporal_loss_enabled else 0.0)
         )
 
@@ -245,8 +251,7 @@ class MeghdootDiffusion:
             "mse_loss": mse_loss,
             "physics_loss": phys_loss,
             "grad_loss": grad_loss,
-            "ssim_loss": ssim_loss,
-            "mae_loss": mae_loss,
+            "latent_l1_loss": latent_l1_loss,
             "temporal_loss": temporal_loss,
         }
 
@@ -256,6 +261,7 @@ class MeghdootDiffusion:
         self,
         history_latents: torch.Tensor,
         num_inference_steps: int | None = None,
+        guidance_scale: float | None = None,
     ) -> torch.Tensor:
         """Generate the next latent frame given history.
 
@@ -270,6 +276,9 @@ class MeghdootDiffusion:
         """
         self.unet.eval()
         steps = num_inference_steps or self.diff_cfg["inference"]["num_inference_steps"]
+        cfg_scale = guidance_scale
+        if cfg_scale is None:
+            cfg_scale = self.diff_cfg.get("inference", {}).get("guidance_scale", 1.0)
         self.scheduler.set_timesteps(steps, device=self.device)
 
         B = history_latents.size(0)
@@ -281,9 +290,18 @@ class MeghdootDiffusion:
         x_t = torch.randn(B, C_out, H, W, device=self.device)
 
         for t in tqdm(self.scheduler.timesteps, desc="Sampling", leave=False):
-            model_input = torch.cat([cond, x_t], dim=1)
             t_batch = t.expand(B).to(self.device)
-            noise_pred = self.unet(model_input, t_batch).sample
+
+            if cfg_scale is not None and cfg_scale > 1.0:
+                cond_input = torch.cat([cond, x_t], dim=1)
+                uncond_input = torch.cat([torch.zeros_like(cond), x_t], dim=1)
+                noise_pred_cond = self.unet(cond_input, t_batch).sample
+                noise_pred_uncond = self.unet(uncond_input, t_batch).sample
+                noise_pred = noise_pred_uncond + cfg_scale * (noise_pred_cond - noise_pred_uncond)
+            else:
+                model_input = torch.cat([cond, x_t], dim=1)
+                noise_pred = self.unet(model_input, t_batch).sample
+
             x_t = self.scheduler.step(noise_pred, t, x_t).prev_sample
 
         return x_t

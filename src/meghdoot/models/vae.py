@@ -140,11 +140,18 @@ class SatelliteVAE:
         self.vae_cfg = cfg["vae"]
         self.device = get_device(cfg["project"].get("device", "cuda"))
 
-        log.info(f"Loading VAE: {self.vae_cfg['pretrained']} (Adapting for 2-channel Input)")
-        
-        # Load the base weights, but override the input/output channels
+        pretrained_ref = self.vae_cfg["pretrained"]
+        base_pretrained = self.vae_cfg.get("base_pretrained", "stabilityai/sd-vae-ft-mse")
+
+        # If pretrained is a checkpoint file, bootstrap architecture from base_pretrained
+        from_pretrained_ref = base_pretrained if str(pretrained_ref).endswith(".pt") else pretrained_ref
+
+        log.info(
+            f"Loading VAE base: {from_pretrained_ref} (adapting for 2-channel input)"
+        )
+
         self.vae = AutoencoderKL.from_pretrained(
-            self.vae_cfg["pretrained"],
+            from_pretrained_ref,
             ignore_mismatched_sizes=True, # Critical for adapting to 2-channel
         )
         
@@ -166,9 +173,13 @@ class SatelliteVAE:
 
         self.vae = self.vae.to(self.device).to(torch.float32)
 
-        # Hybrid loss components
-        self.ssim_loss = SSIMLoss(channels=2).to(self.device)
-        self.vgg_loss = VGGPerceptualLoss().to(self.device).eval()
+        # Hybrid loss components (lazy-init in fine_tune to avoid loading VGG in inference-only flows)
+        self.ssim_loss: SSIMLoss | None = None
+        self.vgg_loss: VGGPerceptualLoss | None = None
+
+        # Optional load of fine-tuned weights from checkpoint file
+        if str(pretrained_ref).endswith(".pt") and Path(pretrained_ref).exists():
+            self.load(pretrained_ref)
 
     @torch.no_grad()
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -181,6 +192,28 @@ class SatelliteVAE:
         """Decode latent back to 2-channel pixel space."""
         z = z / self.vae.config.scaling_factor
         return self.vae.decode(z).sample
+
+    def load(self, ckpt_path: str | Path) -> None:
+        """Load fine-tuned VAE weights from a .pt checkpoint."""
+        ckpt_path = Path(ckpt_path)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"VAE checkpoint not found: {ckpt_path}")
+        state = torch.load(ckpt_path, map_location=self.device, weights_only=True)
+        self.vae.load_state_dict(state, strict=False)
+        log.info(f"Loaded VAE weights from {ckpt_path}")
+
+    def eval(self) -> "SatelliteVAE":
+        self.vae.eval()
+        return self
+
+    def train(self) -> "SatelliteVAE":
+        self.vae.train()
+        return self
+
+    def to(self, device: torch.device) -> "SatelliteVAE":
+        self.vae.to(device)
+        self.device = device
+        return self
 
     # ── Fine-tune ──────────────────────────────────
     def fine_tune(self, dataloader: DataLoader) -> dict[str, list[float]]:
@@ -207,6 +240,12 @@ class SatelliteVAE:
 
         history: dict[str, list[float]] = {"loss": [], "ssim": [], "mae": [], "vgg": []}
         self.vae.train()
+
+        # Initialize training-only losses once
+        if self.ssim_loss is None:
+            self.ssim_loss = SSIMLoss(channels=2).to(self.device)
+        if self.vgg_loss is None:
+            self.vgg_loss = VGGPerceptualLoss().to(self.device).eval()
 
         for epoch in range(1, epochs + 1):
             epoch_loss, epoch_ssim, epoch_mae, epoch_vgg = 0.0, 0.0, 0.0, 0.0
