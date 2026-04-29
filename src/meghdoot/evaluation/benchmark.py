@@ -144,7 +144,36 @@ def generate_comparison_video(
         plt.close(fig)
 
     log.info(f"Saved {len(meghdoot_preds)} comparison frames → {output_path}")
+    
+def evaluate_pysteps(
+    cfg: dict,
+    dataset: INSATSequenceDataset,
+    n_samples: int = 50,
+) -> dict[str, float]:
+    """Evaluate the PySTEPS optical flow baseline."""
+    metrics_list = []
+    csi_thresholds = cfg["evaluation"]["csi_thresholds"]
 
+    for idx in range(min(n_samples, len(dataset))):
+        sample = dataset[idx]
+        history = sample["history"].numpy()  # [T_past, C, H, W]
+        target = sample["target"].numpy()    # [T_future, C, H, W]
+
+        # Generate prediction
+        pred = pysteps_forecast(history, n_leadtimes=target.shape[0])
+
+        # Evaluate strictly on TIR1 channel (Index 0) to match Meghdoot-AI
+        pred_tir1 = pred[:, 0, :, :]
+        target_tir1 = target[:, 0, :, :]
+
+        metrics_list.append(compute_all_metrics(pred_tir1, target_tir1, csi_thresholds))
+
+    # Average metrics over all samples
+    avg_metrics = {}
+    for key in metrics_list[0].keys():
+        avg_metrics[key] = float(np.mean([m[key] for m in metrics_list]))
+
+    return avg_metrics
 
 def main() -> None:
     import argparse
@@ -176,24 +205,32 @@ def main() -> None:
     diffusion = MeghdootDiffusion(cfg)
     diffusion.load(args.diffusion_ckpt)
 
-    # ── Evaluate ──────────────────────────────────
+# ── Evaluate ──────────────────────────────────
     log.info("═══ Evaluating Meghdoot-AI ═══")
     meghdoot_metrics = evaluate_meghdoot(
         cfg, diffusion, vae, latent_dataset, pixel_dataset, device, args.n_samples
     )
     log.info(f"Meghdoot-AI: {meghdoot_metrics}")
 
-    log.info("═══ Evaluating ConvLSTM Baseline ═══")
-    convlstm_metrics = evaluate_convlstm(
-        cfg, pixel_dataset, device, args.convlstm_ckpt, args.n_samples
-    )
-    log.info(f"ConvLSTM:    {convlstm_metrics}")
+    results = {"meghdoot_ai": meghdoot_metrics}
+
+    # Conditionally run ConvLSTM
+    if cfg["evaluation"]["baselines"]["convlstm"]["enabled"]:
+        log.info("═══ Evaluating ConvLSTM Baseline ═══")
+        convlstm_metrics = evaluate_convlstm(
+            cfg, pixel_dataset, device, args.convlstm_ckpt, args.n_samples
+        )
+        results["convlstm"] = convlstm_metrics
+        log.info(f"ConvLSTM:    {convlstm_metrics}")
+
+    # Conditionally run PySTEPS
+    if cfg["evaluation"]["baselines"]["pysteps"]["enabled"]:
+        log.info("═══ Evaluating PySTEPS Baseline ═══")
+        pysteps_metrics = evaluate_pysteps(cfg, pixel_dataset, args.n_samples)
+        results["pysteps"] = pysteps_metrics
+        log.info(f"PySTEPS:     {pysteps_metrics}")
 
     # Save results
-    results = {
-        "meghdoot_ai": meghdoot_metrics,
-        "convlstm": convlstm_metrics,
-    }
     results_path = out_dir / "benchmark_results.json"
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
