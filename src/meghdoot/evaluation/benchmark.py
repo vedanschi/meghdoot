@@ -177,9 +177,10 @@ def evaluate_pysteps(
 
 def main() -> None:
     import argparse
+    import os
 
     parser = argparse.ArgumentParser(description="Run comparative evaluation")
-    parser.add_argument("--config", default=None)
+    parser.add_argument("--config", default="configs/test.yaml")
     parser.add_argument("--diffusion-ckpt", required=True, help="Diffusion model checkpoint")
     parser.add_argument("--convlstm-ckpt", default=None, help="ConvLSTM checkpoint")
     parser.add_argument("--n-samples", type=int, default=50)
@@ -188,47 +189,59 @@ def main() -> None:
     cfg = load_config(args.config)
     seed_everything(cfg["project"]["seed"])
     device = get_device(cfg["project"].get("device", "cuda"))
-    out_dir = ensure_dir(cfg["evaluation"]["output_dir"])
+    
+    # Ensure out_dir is a Path object for the / operator
+    out_dir = Path(cfg["evaluation"]["output_dir"])
+    ensure_dir(out_dir)
 
-    # Datasets (Removed obsolete channel argument)
+    # FIX 1: Updated parameters to match dataset.py signature
+    past_len = cfg["diffusion"]["conditioning"]["num_history_frames"]
+    future_len = cfg.get("diffusion", {}).get("inference", {}).get("prediction_horizon_frames", 6)
+
     pixel_dataset = INSATSequenceDataset(
         data_dir=cfg["data"]["paths"]["processed"],
-        num_history=cfg["diffusion"]["conditioning"]["num_history_frames"],
+        seq_len_past=past_len,
+        seq_len_future=future_len
     )
     latent_dataset = LatentSequenceDataset(
         latent_dir=cfg["data"]["paths"]["latents"],
-        num_history=cfg["diffusion"]["conditioning"]["num_history_frames"],
+        seq_len_past=past_len,
+        seq_len_future=future_len
     )
 
-    # Models
-    vae = SatelliteVAE(cfg)
-    diffusion = MeghdootDiffusion(cfg)
-    diffusion.load(args.diffusion_ckpt)
+    # FIX 2: Explicitly load fine-tuned VAE weights from bucket path
+    vae = SatelliteVAE(cfg).to(device)
+    vae_path = cfg["vae"]["pretrained"]
+    if vae_path.endswith(".pt") and os.path.exists(vae_path):
+        vae.load_state_dict(torch.load(vae_path, map_location=device))
+        log.info(f"Loaded fine-tuned VAE weights from {vae_path}")
+    
+    vae.eval()
 
-# ── Evaluate ──────────────────────────────────
+    diffusion = MeghdootDiffusion(cfg).to(device)
+    diffusion.load(args.diffusion_ckpt)
+    diffusion.eval()
+
+    # ── Evaluate ──────────────────────────────────
     log.info("═══ Evaluating Meghdoot-AI ═══")
     meghdoot_metrics = evaluate_meghdoot(
         cfg, diffusion, vae, latent_dataset, pixel_dataset, device, args.n_samples
     )
-    log.info(f"Meghdoot-AI: {meghdoot_metrics}")
-
+    
     results = {"meghdoot_ai": meghdoot_metrics}
+    convlstm_metrics = {} # Initialize to prevent NameError
 
-    # Conditionally run ConvLSTM
     if cfg["evaluation"]["baselines"]["convlstm"]["enabled"]:
         log.info("═══ Evaluating ConvLSTM Baseline ═══")
         convlstm_metrics = evaluate_convlstm(
             cfg, pixel_dataset, device, args.convlstm_ckpt, args.n_samples
         )
         results["convlstm"] = convlstm_metrics
-        log.info(f"ConvLSTM:    {convlstm_metrics}")
 
-    # Conditionally run PySTEPS
     if cfg["evaluation"]["baselines"]["pysteps"]["enabled"]:
         log.info("═══ Evaluating PySTEPS Baseline ═══")
         pysteps_metrics = evaluate_pysteps(cfg, pixel_dataset, args.n_samples)
         results["pysteps"] = pysteps_metrics
-        log.info(f"PySTEPS:     {pysteps_metrics}")
 
     # Save results
     results_path = out_dir / "benchmark_results.json"
@@ -236,19 +249,21 @@ def main() -> None:
         json.dump(results, f, indent=2)
     log.info(f"Results saved → {results_path}")
 
-    # Print comparison table
+    # FIX 3: Robust comparison table
     log.info("\n" + "=" * 60)
     log.info(f"{'Metric':<20} {'Meghdoot-AI':>15} {'ConvLSTM':>15}")
     log.info("-" * 60)
     for key in meghdoot_metrics:
         m_val = meghdoot_metrics[key]
         c_val = convlstm_metrics.get(key, float("nan"))
-        better = "✓" if (key == "ssim" and m_val > c_val) or \
-                        (key == "rmse" and m_val < c_val) or \
-                        (key.startswith("csi") and m_val > c_val) else ""
+        
+        # Comparison logic (higher is better for SSIM/CSI, lower for RMSE)
+        better = ""
+        if not np.isnan(c_val):
+            if key == "rmse":
+                better = "✓" if m_val < c_val else ""
+            else:
+                better = "✓" if m_val > c_val else ""
+                
         log.info(f"{key:<20} {m_val:>15.4f} {c_val:>15.4f}  {better}")
     log.info("=" * 60)
-
-
-if __name__ == "__main__":
-    main()
