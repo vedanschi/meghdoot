@@ -127,10 +127,18 @@ def pysteps_forecast(
     except ImportError:
         raise ImportError(
             "pysteps is required for the optical flow baseline. "
-            "Install with: pip install pysteps"
+            "Install with pip install pysteps"
         )
 
-    # PySTEPS expects [T, H, W]; use last 2+ frames for motion
-    motion = dense_lucaskanade(frames[-3:])
-    forecast = extrap_forecast(frames[-1], motion, n_leadtimes)
-    return forecast
+    T, C, H, W = frames.shape
+    channel_predictions = []
+
+    # Calculate optical flow and extrapolate for each channel independently
+    for c in range(C):
+        channel_frames = frames[:, c, :, :]  # Shape: [T, H, W]
+        oflow = dense_lucaskanade(channel_frames)
+        nowcast = extrap_forecast(channel_frames[-1], oflow, n_leadtimes)
+        channel_predictions.append(nowcast)
+
+    # Stack back to [n_leadtimes, C, H, W]
+    return np.stack(channel_predictions, axis=1)
