@@ -52,7 +52,7 @@ data:
 
 # ── Phase 2: VAE (Latent Encoder) ───────────────
 vae:
-  pretrained: "stabilityai/sd-vae-ft-mse"
+  pretrained: "/home/jupyter/meghdoot_data/weights/vae/vae_final.pt"
   latent_channels: 4
   spatial_reduction: 8            # 512→64
   fine_tune:
