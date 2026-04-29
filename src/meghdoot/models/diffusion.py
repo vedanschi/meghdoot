@@ -345,3 +345,34 @@ class MeghdootDiffusion:
             
         log.info(f"Loaded diffusion checkpoint (epoch {ckpt['epoch']})")
         return ckpt["epoch"]
+
+    # ── Device / Mode Helpers ─────────────────────
+    def to(self, device: str | torch.device):
+        """Move the internal modules and loss helpers to `device`.
+
+        Returns self for chaining (e.g., `model.to(device)`).
+        """
+        self.device = get_device(device)
+        self.unet.to(self.device)
+        try:
+            self.mass_loss.to(self.device)
+        except Exception:
+            # mass_loss may be stateless; ignore if cannot move
+            pass
+        if getattr(self, "temporal_loss_enabled", False):
+            try:
+                self.temporal_loss.to(self.device)
+            except Exception:
+                pass
+        # Scheduler/EMA live on CPU by design; return self for convenience
+        return self
+
+    def train(self, mode: bool = True):
+        """Set training/eval mode on the wrapped UNet."""
+        self.unet.train(mode)
+        return self
+
+    def eval(self):
+        """Shortcut to set the UNet to evaluation mode."""
+        self.unet.eval()
+        return self
