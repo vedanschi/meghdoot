@@ -229,6 +229,9 @@ class MeghdootDiffusion:
         # Use x0 prediction formula: x0 ≈ (x_t - sqrt(1-α̅) * ε) / sqrt(α̅)
         alpha_bar = self.scheduler.alphas_cumprod[timesteps].view(B, 1, 1, 1).to(self.device)
         predicted_x0 = (noisy_target - (1 - alpha_bar).sqrt() * noise_pred) / alpha_bar.sqrt()
+        
+        # Clamp predicted_x0 to prevent extreme values from destabilizing physics loss
+        predicted_x0 = torch.clamp(predicted_x0, -10.0, 10.0)
 
         last_cond = history_latents[:, -1]  # [B, 4, 64, 64]
         phys_loss = self.mass_loss(predicted_x0, last_cond)

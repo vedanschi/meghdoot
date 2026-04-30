@@ -149,7 +149,7 @@ diffusion:
   conditioning:
     num_history_frames: 3         # use 3 past frames
     strategy: "channel_concat"    # channel_concat | cross_attention
-    cond_dropout_prob: 0.15       # enables CFG-compatible conditional training
+    cond_dropout_prob: 0.05       # enables CFG-compatible conditional training (reduced to prevent leaf pattern)
 
   # Physics-aware loss
   physics_loss:
