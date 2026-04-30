@@ -97,15 +97,10 @@ def main() -> None:
 
 # ── Model & Optimiser ─────────────────────────
     model = MeghdootDiffusion(cfg)
-    # Ensure the wrapped model is moved to the training device
-    try:
-        model = model.to(device)
-    except Exception:
-        # Some environments may not support direct .to on wrappers; try moving internal UNet
-        try:
-            model.unet.to(device)
-        except Exception:
-            pass
+    model.to(device)
+    model.unet.to(device)
+    if hasattr(model, 'scheduler'):
+        model.scheduler.to(device)
     
     optimizer = torch.optim.AdamW(
         model.unet.parameters(),
