@@ -75,7 +75,7 @@ def main() -> None:
         shuffle=True,
         num_workers=cfg["data"]["num_workers"],
         prefetch_factor=cfg["data"].get("prefetch_factor", 2) if cfg["data"]["num_workers"] > 0 else None,
-        persistent_workers=cfg["data"]["num_workers"] > 0,
+        persistent_workers=False,  # DISABLED: causes deadlock with CUDA + multiprocessing
         pin_memory=torch.cuda.is_available(),
         drop_last=True,
     )

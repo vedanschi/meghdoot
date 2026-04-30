@@ -47,7 +47,7 @@ data:
     metadata: "/home/jupyter/meghdoot_data/metadata"
 
   # DataLoader
-  num_workers: 2
+  num_workers: 1
   prefetch_factor: 2
 
 # ── Phase 2: VAE (Latent Encoder) ───────────────
