@@ -273,8 +273,8 @@ def _log_sample(model, dataset, device, epoch):
         with torch.no_grad():
             sample = dataset[0]
             history = sample["history"].unsqueeze(0).to(device)
-            # Use 20 steps for faster logging during training
-            latent_pred = model.sample(history, num_inference_steps=20)
+            # Use 50 steps to better match inference quality in logged samples
+            latent_pred = model.sample(history, num_inference_steps=50)
 
             # Decode using project SatelliteVAE to preserve 2-channel adaptation + latent scaling
             vae = SatelliteVAE(model.cfg).to(device).eval()

@@ -169,7 +169,8 @@ diffusion:
     ema_decay: 0.9999
     mixed_precision: "fp16"
     max_grad_norm: 0.5
-    latent_l1_weight: 0.02        # small regularizer in latent space only
+    latent_l1_weight: 0.005       # reduced to preserve cloud texture / avoid over-smoothing
+    save_every_n_epochs: 10       # save checkpoints every 10 epochs; epoch 100 is still saved explicitly
 
   # Inference
   inference:
@@ -214,6 +215,6 @@ logging:
     entity: null                  # set your W&B username
     mode: "online"
     log_every_n_steps: 50
-    log_images_every_n_epochs: 1
+    log_images_every_n_epochs: 10  # sample images every 10 epochs to reduce overhead
   console:
     level: "INFO"
