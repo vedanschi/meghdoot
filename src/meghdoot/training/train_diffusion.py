@@ -99,8 +99,6 @@ def main() -> None:
     model = MeghdootDiffusion(cfg)
     model.to(device)
     model.unet.to(device)
-    if hasattr(model, 'scheduler'):
-        model.scheduler.to(device)
     
     optimizer = torch.optim.AdamW(
         model.unet.parameters(),
