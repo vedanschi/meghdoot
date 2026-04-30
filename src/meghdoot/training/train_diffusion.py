@@ -97,8 +97,6 @@ def main() -> None:
 
 # ── Model & Optimiser ─────────────────────────
     model = MeghdootDiffusion(cfg)
-    model.to(device)
-    model.unet.to(device)
     
     optimizer = torch.optim.AdamW(
         model.unet.parameters(),
