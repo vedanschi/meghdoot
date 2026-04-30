@@ -238,10 +238,13 @@ class MeghdootDiffusion:
         # PHYSICS LOSS SCHEDULING: Only apply at low timesteps (high alpha_bar)
         # where x0 reconstruction is meaningful and stable.
         # At t=0 (alpha_bar≈1), x0 is nearly the true image. At t=1000 (alpha_bar≈0), it's mostly noise.
-        # Use alpha_bar as a scheduler: only apply physics when alpha_bar > threshold (e.g., 0.3)
-        physics_mask = (alpha_bar > 0.3).float()  # shape [B, 1, 1, 1]
-        phys_loss = self.mass_loss(predicted_x0, last_cond)
-        phys_loss = phys_loss * physics_mask.mean()  # downweight if mostly high-noise timesteps
+        # Threshold: only apply physics when alpha_bar > 0.1 (very low noise, where x0 is reliable)
+        physics_mask = (alpha_bar > 0.1).float()  # shape [B, 1, 1, 1]
+        if physics_mask.mean() > 0:
+            phys_loss = self.mass_loss(predicted_x0, last_cond)
+            phys_loss = phys_loss * physics_mask.mean()  # scale by proportion of valid timesteps
+        else:
+            phys_loss = torch.tensor(0.0, device=self.device)  # no valid timesteps, zero out
 
         # Gradient smoothness penalty (discourage sharp artefacts)
         dx = torch.diff(predicted_x0, dim=-1)
