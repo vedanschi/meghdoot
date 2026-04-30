@@ -43,7 +43,7 @@ data:
   paths:
     raw: "/home/jupyter/meghdoot_data/raw"
     processed: "/home/jupyter/meghdoot_data/processed"
-    latents: "/home/jupyter/local_data" # Matches the sync path above
+    latents: "/home/jupyter/local_data/stacked_tensors" # Local cached VAE latents for diffusion training
     metadata: "/home/jupyter/meghdoot_data/metadata"
 
   # DataLoader
@@ -160,7 +160,7 @@ diffusion:
 
   # Training
   training:
-    epochs: 100
+    epochs: 150
     batch_size: 4
     gradient_accumulation_steps: 4
     learning_rate: 5.0e-5
