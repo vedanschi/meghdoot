@@ -143,7 +143,7 @@ class MeghdootDiffusion:
         )
 
         # Physics loss
-        self.mass_loss = MassConservationLoss()
+        self.mass_loss = MassConservationLoss().to(self.device)
         self.physics_weight = self.diff_cfg["physics_loss"].get("mass_conservation_weight", 0.1)
         self.grad_penalty_weight = self.diff_cfg["physics_loss"].get("gradient_penalty_weight", 0.05)
 
@@ -162,7 +162,7 @@ class MeghdootDiffusion:
                 warp_weight=temp_cfg.get("warp_weight", 1.0),
                 flow_smooth_weight=temp_cfg.get("flow_smooth_weight", 0.1),
                 flow_mag_weight=temp_cfg.get("flow_mag_weight", 0.01),
-            )
+            ).to(self.device)
             self.temporal_weight = temp_cfg.get("temporal_weight", 0.05)
             log.info("Temporal consistency loss ENABLED")
 
