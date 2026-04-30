@@ -5,6 +5,7 @@ Logging helpers – Rich console + W&B integration.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Any
 
@@ -53,12 +54,31 @@ def setup_wandb(cfg: dict) -> None:
         import wandb
 
         wandb_cfg = cfg.get("logging", {}).get("wandb", {})
+        mode_value = wandb_cfg.get("mode") or os.environ.get("WANDB_MODE") or "online"
+        if mode_value == "offline":
+            mode = "offline"
+        elif mode_value == "disabled":
+            mode = "disabled"
+        elif mode_value == "shared":
+            mode = "shared"
+        else:
+            mode = "online"
         wandb.init(
             project=wandb_cfg.get("project", "meghdoot-ai"),
             entity=wandb_cfg.get("entity"),
             config=cfg,
-            mode="offline",
+            mode=mode,
             save_code=False,
         )
+
+        diagnostics = {
+            "project": cfg.get("project", {}).get("name"),
+            "seed": cfg.get("project", {}).get("seed"),
+            "device": cfg.get("project", {}).get("device"),
+            "wandb_mode": mode,
+        }
+        run = getattr(wandb, "run", None)
+        if run is not None:
+            run.summary.update(diagnostics)
     except ImportError:
         get_logger(__name__).warning("wandb not installed – skipping W&B init")

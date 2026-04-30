@@ -25,6 +25,7 @@ import time
 import torch
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from meghdoot.data.dataset import LatentSequenceDataset
 from meghdoot.models.diffusion import MeghdootDiffusion
@@ -73,9 +74,25 @@ def main() -> None:
         batch_size=t_cfg["batch_size"],
         shuffle=True,
         num_workers=cfg["data"]["num_workers"],
+        prefetch_factor=cfg["data"].get("prefetch_factor", 2) if cfg["data"]["num_workers"] > 0 else None,
+        persistent_workers=cfg["data"]["num_workers"] > 0,
         pin_memory=torch.cuda.is_available(),
         drop_last=True,
     )
+
+    try:
+        import wandb
+
+        run = getattr(wandb, "run", None)
+        if run is not None:
+            run.summary["data/num_latents"] = len(dataset.files)
+            run.summary["data/num_sequences"] = len(dataset)
+            run.summary["train/batch_size"] = t_cfg["batch_size"]
+            run.summary["train/epochs"] = t_cfg["epochs"]
+            run.summary["train/accumulation_steps"] = t_cfg["gradient_accumulation_steps"]
+            run.summary["env/device"] = str(device)
+    except Exception:
+        pass
 
 # ── Model & Optimiser ─────────────────────────
     model = MeghdootDiffusion(cfg)
@@ -130,14 +147,25 @@ def main() -> None:
         epoch_phys = 0.0
         epoch_latent_l1 = 0.0
         epoch_temporal = 0.0
+        epoch_data_time = 0.0
+        epoch_step_time = 0.0
+        epoch_grad_norm = 0.0
         epoch_start = time.perf_counter()
 
         optimizer.zero_grad()
 
-        for step, batch in enumerate(dataloader, 1):
-            step_start = time.perf_counter()
-            history = batch["history"].to(device)   # [B, 3, 4, 64, 64]
-            target = batch["target"].to(device)      # [B, 4, 64, 64]
+        pbar = tqdm(enumerate(dataloader, 1), total=len(dataloader), 
+                    desc=f"Epoch {epoch:3d}/{t_cfg['epochs']}", 
+                    unit="batch", leave=True, colour="green")
+        
+        batch_wait_start = time.perf_counter()
+        for step, batch in pbar:
+            batch_ready = time.perf_counter()
+            data_time = batch_ready - batch_wait_start
+            step_start = batch_ready
+
+            history = batch["history"].to(device, non_blocking=torch.cuda.is_available())   # [B, 3, 4, 64, 64]
+            target = batch["target"].to(device, non_blocking=torch.cuda.is_available())      # [B, 4, 64, 64]
 
             with autocast(enabled=use_amp):
                 losses = model.training_step(history, target)
@@ -145,12 +173,13 @@ def main() -> None:
 
             scaler.scale(loss).backward()
 
+            grad_norm = 0.0
             if step % t_cfg["gradient_accumulation_steps"] == 0:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(
+                grad_norm = float(torch.nn.utils.clip_grad_norm_(
                     model.unet.parameters(),
                     t_cfg["max_grad_norm"],
-                )
+                ))
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
@@ -163,13 +192,21 @@ def main() -> None:
             epoch_phys += losses["physics_loss"].item()
             epoch_latent_l1 += losses["latent_l1_loss"].item()
             epoch_temporal += losses["temporal_loss"].item()
+            epoch_data_time += data_time
+            epoch_step_time += time.perf_counter() - step_start
+            epoch_grad_norm += grad_norm
 
-            if step == 1 or step % 25 == 0:
-                log.info(
-                    f"Epoch {epoch:3d} step {step:4d}/{len(dataloader)} │ "
-                    f"loss={losses['loss'].item():.5f} │ "
-                    f"step_time={time.perf_counter() - step_start:.2f}s"
-                )
+            # Update progress bar with loss info
+            pbar.set_postfix({
+                "loss": f"{losses['loss'].item():.4f}",
+                "mse": f"{losses['mse_loss'].item():.4f}",
+                "phys": f"{losses['physics_loss'].item():.4f}",
+                "temp": f"{losses['temporal_loss'].item():.4f}",
+                "data": f"{data_time:.2f}s",
+                "step": f"{time.perf_counter() - step_start:.2f}s",
+            })
+
+            batch_wait_start = time.perf_counter()
 
         n = len(dataloader)
         avg_loss = epoch_loss / n
@@ -183,13 +220,17 @@ def main() -> None:
         avg_phys = epoch_phys / n
         avg_latent_l1 = epoch_latent_l1 / n
         avg_temporal = epoch_temporal / n
+        avg_data_time = epoch_data_time / n
+        avg_step_time = epoch_step_time / n
+        avg_grad_norm = epoch_grad_norm / max(1, n // t_cfg["gradient_accumulation_steps"])
         epoch_time = time.perf_counter() - epoch_start
 
         log.info(
             f"Epoch {epoch:3d}/{t_cfg['epochs']} │ "
             f"loss={avg_loss:.5f}  mse={avg_mse:.5f}  phys={avg_phys:.5f}  "
             f"latent_l1={avg_latent_l1:.5f}  temporal={avg_temporal:.5f}  "
-            f"lr={scheduler.get_last_lr()[0]:.2e}  epoch_time={epoch_time:.1f}s"
+            f"lr={scheduler.get_last_lr()[0]:.2e}  data_time={avg_data_time:.2f}s  "
+            f"step_time={avg_step_time:.2f}s  grad_norm={avg_grad_norm:.2f}  epoch_time={epoch_time:.1f}s"
         )
 
         # W&B logging
@@ -202,6 +243,10 @@ def main() -> None:
                 "diffusion/latent_l1": avg_latent_l1,
                 "diffusion/temporal": avg_temporal,
                 "diffusion/lr": scheduler.get_last_lr()[0],
+                "diffusion/data_time": avg_data_time,
+                "diffusion/step_time": avg_step_time,
+                "diffusion/grad_norm": avg_grad_norm,
+                "diffusion/epoch_time": epoch_time,
                 "diffusion/epoch": epoch,
             })
         except Exception:
