@@ -154,20 +154,21 @@ diffusion:
   # Physics-aware loss
   physics_loss:
     enabled: true
-    mass_conservation_weight: 0.001
-    gradient_penalty_weight: 0.001
+    # Reduced weights to avoid instability; increase later if needed
+    mass_conservation_weight: 0.0001
+    gradient_penalty_weight: 0.0001
 
   # Training
   training:
     epochs: 100
     batch_size: 4
     gradient_accumulation_steps: 4
-    learning_rate: 1.0e-4
+    learning_rate: 5.0e-5
     lr_scheduler: "cosine"
     warmup_steps: 500
     ema_decay: 0.9999
     mixed_precision: "fp16"
-    max_grad_norm: 1.0
+    max_grad_norm: 0.5
     latent_l1_weight: 0.02        # small regularizer in latent space only
 
   # Inference
