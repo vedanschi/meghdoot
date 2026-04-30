@@ -68,6 +68,7 @@ def main() -> None:
         latent_dir=cfg["data"]["paths"]["latents"],
         channel=cfg["data"]["channels"][0],
         num_history=cfg["diffusion"]["conditioning"]["num_history_frames"],
+        cache_in_memory=True,  # Load all latents into RAM at startup (1758 * 4 * 64 * 64 * 4 bytes ~ 3.5GB)
     )
     dataloader = DataLoader(
         dataset,
