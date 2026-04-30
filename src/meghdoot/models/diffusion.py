@@ -40,6 +40,8 @@ class MassConservationLoss(nn.Module):
 
     Cloud mass is approximated as the spatial integral (sum) of
     brightness-temperature deviations from a reference value.
+    
+    Normalized by L2 norm to prevent huge raw values destabilizing training.
     """
 
     def forward(
@@ -58,11 +60,15 @@ class MassConservationLoss(nn.Module):
         Returns
         -------
         Tensor (scalar)
-            Mean absolute difference in per-channel spatial sums.
+            Normalized mean absolute difference in per-channel spatial sums.
         """
         mass_pred = predicted.sum(dim=(-2, -1))      # [B, C]
         mass_cond = last_condition.sum(dim=(-2, -1))  # [B, C]
-        return (mass_pred - mass_cond).abs().mean()
+        
+        # Normalize by L2 norm to keep loss in reasonable range (~0.01-0.1)
+        # Prevents raw latent magnitude from dominating the loss
+        norm_factor = (mass_cond.abs().mean() + 1e-8)  # avoid division by zero
+        return ((mass_pred - mass_cond).abs() / norm_factor).mean()
 
 
 # ── EMA Helper ─────────────────────────────────────
@@ -230,8 +236,9 @@ class MeghdootDiffusion:
         alpha_bar = self.scheduler.alphas_cumprod[timesteps].view(B, 1, 1, 1).to(self.device)
         predicted_x0 = (noisy_target - (1 - alpha_bar).sqrt() * noise_pred) / alpha_bar.sqrt()
         
-        # Clamp predicted_x0 to prevent extreme values from destabilizing physics loss
-        predicted_x0 = torch.clamp(predicted_x0, -10.0, 10.0)
+        # Clamp predicted_x0 tightly: latents are [-1, 1], so allow [-3, 3] conservatively
+        # (NOT [-10, 10] which allows 10x larger values and destabilizes losses)
+        predicted_x0 = torch.clamp(predicted_x0, -3.0, 3.0)
 
         last_cond = history_latents[:, -1]  # [B, 4, 64, 64]
         
@@ -247,12 +254,14 @@ class MeghdootDiffusion:
             phys_loss = torch.tensor(0.0, device=self.device)  # no valid timesteps, zero out
 
         # Gradient smoothness penalty (discourage sharp artefacts)
+        # Divided by 2.0 to normalize gradient components
         dx = torch.diff(predicted_x0, dim=-1)
         dy = torch.diff(predicted_x0, dim=-2)
-        grad_loss = (dx.abs().mean() + dy.abs().mean()) * self.grad_penalty_weight
+        grad_loss = ((dx.abs().mean() + dy.abs().mean()) / 2.0) * self.grad_penalty_weight
 
         # Keep latent-space regularization simple and low-weight
-        latent_l1_loss = F.l1_loss(predicted_x0, target_latent)
+        # Only apply when significantly off-target (not during high-noise timesteps where x0 is garbage)
+        latent_l1_loss = F.l1_loss(predicted_x0, target_latent) * physics_mask.mean()
 
         # Temporal consistency loss (optical-flow warping between last cond & prediction)
         temporal_loss = torch.tensor(0.0, device=self.device)
