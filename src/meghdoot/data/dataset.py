@@ -110,7 +110,9 @@ class LatentSequenceDataset(Dataset):
 
         self._cache = None
         if self.cache_in_memory:
+            log.info(f"Loading all {len(self.files)} latents into memory...")
             self._cache = [torch.load(fp, weights_only=True) for fp in self.files]
+            log.info(f"✓ Cache complete: {len(self._cache)} tensors in RAM")
 
         log.info(
             f"LatentSequenceDataset: {len(self.files)} latents, "
