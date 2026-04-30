@@ -20,6 +20,7 @@ import argparse
 import os 
 import subprocess
 import math
+import time
 
 import torch
 from torch.cuda.amp import GradScaler, autocast
@@ -52,7 +53,14 @@ def main() -> None:
     setup_wandb(cfg)
 
     t_cfg = cfg["diffusion"]["training"]
-    device = get_device(cfg["project"].get("device", "cuda"))
+    requested_device = cfg["project"].get("device", "cuda")
+    device = get_device(requested_device)
+    if requested_device == "cuda" and device.type != "cuda":
+        raise RuntimeError(
+            "CUDA was requested but is not available in the current Python environment. "
+            "The training loop would otherwise silently run on CPU."
+        )
+    log.info(f"Using device: {device}")
 
     # ── Data ──────────────────────────────────────
     dataset = LatentSequenceDataset(
@@ -65,12 +73,21 @@ def main() -> None:
         batch_size=t_cfg["batch_size"],
         shuffle=True,
         num_workers=cfg["data"]["num_workers"],
-        pin_memory=True,
+        pin_memory=torch.cuda.is_available(),
         drop_last=True,
     )
 
 # ── Model & Optimiser ─────────────────────────
     model = MeghdootDiffusion(cfg)
+    # Ensure the wrapped model is moved to the training device
+    try:
+        model = model.to(device)
+    except Exception:
+        # Some environments may not support direct .to on wrappers; try moving internal UNet
+        try:
+            model.unet.to(device)
+        except Exception:
+            pass
     
     optimizer = torch.optim.AdamW(
         model.unet.parameters(),
@@ -96,6 +113,7 @@ def main() -> None:
 
     # Mixed precision
     use_amp = t_cfg.get("mixed_precision", "fp16") == "fp16" and device.type == "cuda"
+    # Create a GradScaler in a way that's compatible across torch versions
     scaler = GradScaler(enabled=use_amp)
 
     # ── Training Loop ─────────────────────────────
@@ -112,10 +130,12 @@ def main() -> None:
         epoch_phys = 0.0
         epoch_latent_l1 = 0.0
         epoch_temporal = 0.0
+        epoch_start = time.perf_counter()
 
         optimizer.zero_grad()
 
         for step, batch in enumerate(dataloader, 1):
+            step_start = time.perf_counter()
             history = batch["history"].to(device)   # [B, 3, 4, 64, 64]
             target = batch["target"].to(device)      # [B, 4, 64, 64]
 
@@ -144,6 +164,13 @@ def main() -> None:
             epoch_latent_l1 += losses["latent_l1_loss"].item()
             epoch_temporal += losses["temporal_loss"].item()
 
+            if step == 1 or step % 25 == 0:
+                log.info(
+                    f"Epoch {epoch:3d} step {step:4d}/{len(dataloader)} │ "
+                    f"loss={losses['loss'].item():.5f} │ "
+                    f"step_time={time.perf_counter() - step_start:.2f}s"
+                )
+
         n = len(dataloader)
         avg_loss = epoch_loss / n
         
@@ -156,12 +183,13 @@ def main() -> None:
         avg_phys = epoch_phys / n
         avg_latent_l1 = epoch_latent_l1 / n
         avg_temporal = epoch_temporal / n
+        epoch_time = time.perf_counter() - epoch_start
 
         log.info(
             f"Epoch {epoch:3d}/{t_cfg['epochs']} │ "
             f"loss={avg_loss:.5f}  mse={avg_mse:.5f}  phys={avg_phys:.5f}  "
             f"latent_l1={avg_latent_l1:.5f}  temporal={avg_temporal:.5f}  "
-            f"lr={scheduler.get_last_lr()[0]:.2e}"
+            f"lr={scheduler.get_last_lr()[0]:.2e}  epoch_time={epoch_time:.1f}s"
         )
 
         # W&B logging

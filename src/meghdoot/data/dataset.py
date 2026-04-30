@@ -91,11 +91,13 @@ class LatentSequenceDataset(Dataset):
         self,
         latent_dir: str | Path,
         num_history: int = 3,
+        cache_in_memory: bool = False,
         **kwargs
     ) -> None:
         super().__init__()
         self.latent_dir = Path(latent_dir)
         self.num_history = num_history
+        self.cache_in_memory = cache_in_memory
 
         # Support both direct latent_dir/*.pt and latent_dir/stacked_tensors/*.pt
         target_dir = self.latent_dir / "stacked_tensors"
@@ -105,6 +107,10 @@ class LatentSequenceDataset(Dataset):
         self.files = sorted(self.latent_dir.glob("*.pt"))
         if len(self.files) < num_history + 1:
             log.warning(f"Found {len(self.files)} latents, need {num_history + 1}")
+
+        self._cache = None
+        if self.cache_in_memory:
+            self._cache = [torch.load(fp, weights_only=True) for fp in self.files]
 
         log.info(
             f"LatentSequenceDataset: {len(self.files)} latents, "
@@ -117,7 +123,10 @@ class LatentSequenceDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         latents = []
         for i in range(self.num_history + 1):
-            tensor = torch.load(self.files[idx + i], weights_only=True)
+            if self._cache is not None:
+                tensor = self._cache[idx + i]
+            else:
+                tensor = torch.load(self.files[idx + i], weights_only=True)
             latents.append(tensor)
 
         # Each tensor is [C, h, w]  →  stack → [N+1, C, h, w]

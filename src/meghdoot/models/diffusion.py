@@ -71,11 +71,22 @@ class EMAModel:
 
     def __init__(self, model: nn.Module, decay: float = 0.9999) -> None:
         self.decay = decay
-        self.shadow = {k: v.clone() for k, v in model.state_dict().items()}
+        # Store shadow weights on the same device as the model parameters
+        try:
+            param_device = next(model.parameters()).device
+        except StopIteration:
+            param_device = torch.device("cpu")
+        self.shadow = {k: v.clone().to(param_device) for k, v in model.state_dict().items()}
 
     @torch.no_grad()
     def update(self, model: nn.Module) -> None:
         for k, v in model.state_dict().items():
+            # Ensure shadow and current param are on the same device
+            if self.shadow[k].device != v.device:
+                self.shadow[k] = self.shadow[k].to(v.device)
+            # Ensure dtypes match (avoid unexpected type promotion)
+            if self.shadow[k].dtype != v.dtype:
+                self.shadow[k] = self.shadow[k].to(v.dtype)
             self.shadow[k].mul_(self.decay).add_(v, alpha=1 - self.decay)
 
     def apply(self, model: nn.Module) -> None:
@@ -177,6 +188,12 @@ class MeghdootDiffusion:
         dict  with keys ``"loss"``, ``"mse_loss"``, ``"physics_loss"``
         """
         B = target_latent.size(0)
+
+        # Ensure inputs live on the model device to avoid mixed-device ops
+        if history_latents.device != self.device:
+            history_latents = history_latents.to(self.device)
+        if target_latent.device != self.device:
+            target_latent = target_latent.to(self.device)
 
         # Flatten history: [B, 3, 4, 64, 64] → [B, 12, 64, 64]
         cond = history_latents.view(B, -1, *history_latents.shape[-2:])

@@ -47,7 +47,7 @@ data:
     metadata: "/home/jupyter/meghdoot_data/metadata"
 
   # DataLoader
-  num_workers: 4
+  num_workers: 0
   prefetch_factor: 2
 
 # ── Phase 2: VAE (Latent Encoder) ───────────────
@@ -212,6 +212,6 @@ logging:
     project: "meghdoot-ai"
     entity: null                  # set your W&B username
     log_every_n_steps: 50
-    log_images_every_n_epochs: 5
+    log_images_every_n_epochs: 1
   console:
     level: "INFO"

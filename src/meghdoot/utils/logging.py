@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from typing import Any
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -14,14 +15,29 @@ from rich.logging import RichHandler
 console = Console()
 
 
+class SafeRichHandler(RichHandler):
+    """Rich handler that falls back to plain logging if Rich rendering fails."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+        except Exception:
+            try:
+                fallback = logging.StreamHandler(sys.stdout)
+                fallback.setFormatter(logging.Formatter("%(message)s"))
+                fallback.emit(record)
+            except Exception:
+                pass
+
+
 def get_logger(name: str, level: str = "INFO") -> logging.Logger:
     """Return a Rich-powered logger."""
     logger = logging.getLogger(name)
     if not logger.handlers:
-        handler = RichHandler(
+        handler: logging.Handler = SafeRichHandler(
             console=console,
             show_path=False,
-            rich_tracebacks=True,
+            rich_tracebacks=False,
         )
         handler.setLevel(getattr(logging, level.upper(), logging.INFO))
         fmt = logging.Formatter("%(message)s", datefmt="[%X]")
@@ -41,7 +57,8 @@ def setup_wandb(cfg: dict) -> None:
             project=wandb_cfg.get("project", "meghdoot-ai"),
             entity=wandb_cfg.get("entity"),
             config=cfg,
-            save_code=True,
+            mode="offline",
+            save_code=False,
         )
     except ImportError:
         get_logger(__name__).warning("wandb not installed – skipping W&B init")
