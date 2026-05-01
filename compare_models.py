@@ -136,7 +136,7 @@ def main() -> None:
     pixel_dataset = INSATSequenceDataset(
         data_dir=processed_dir,
         num_history=past_len,
-        prefer_local_cache=True,
+        prefer_local_cache=False,
     )
 
     vae = SatelliteVAE(cfg).to(device)
