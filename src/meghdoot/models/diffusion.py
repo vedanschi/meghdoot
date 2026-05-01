@@ -150,6 +150,20 @@ class MeghdootDiffusion:
         # Optional latent L1 regularizer (keep small; avoid pixel-structure losses in latent space)
         self.latent_l1_weight = self.diff_cfg.get("training", {}).get("latent_l1_weight", 0.0)
 
+        # Forecasting-focused options
+        train_cfg = self.diff_cfg.get("training", {})
+        # Residual mode predicts (x_t - x_{t-1}) in latent space, then reconstructs x_t.
+        self.use_residual_prediction = train_cfg.get("residual_prediction", False)
+        # Direct x0 reconstruction supervision prevents drift toward texture-like mean outputs.
+        self.x0_recon_weight = train_cfg.get("x0_recon_weight", 0.0)
+        # Event focus up-weights high-magnitude latent regions to improve extremes/contrast.
+        self.event_focus_weight = train_cfg.get("event_focus_weight", 0.0)
+        self.event_focus_threshold = train_cfg.get("event_focus_threshold", 0.35)
+        # Morphology/texture losses in latent space.
+        self.edge_loss_weight = train_cfg.get("edge_loss_weight", 0.0)
+        # Contrast matching aligns per-channel latent standard deviation.
+        self.contrast_loss_weight = train_cfg.get("contrast_loss_weight", 0.0)
+
         # Conditioning dropout for CFG-style training (prevents conditional neglect)
         cond_cfg = self.diff_cfg.get("conditioning", {})
         self.cond_dropout_prob = cond_cfg.get("cond_dropout_prob", 0.1)
@@ -217,9 +231,17 @@ class MeghdootDiffusion:
             (B,), device=self.device
         ).long()
 
-        # Add noise to target
+        last_cond = history_latents[:, -1]  # [B, 4, 64, 64]
+
+        # Add noise to either absolute target or residual target.
+        if self.use_residual_prediction:
+            diffusion_target = target_latent - last_cond
+        else:
+            diffusion_target = target_latent
+
+        # Add noise to diffusion target
         noise = torch.randn_like(target_latent)
-        noisy_target = self.scheduler.add_noise(target_latent, noise, timesteps)
+        noisy_target = self.scheduler.add_noise(diffusion_target, noise, timesteps)
 
         # Concatenate condition + noisy target along channel dim
         # [B, 12+4, 64, 64] = [B, 16, 64, 64]
@@ -234,13 +256,16 @@ class MeghdootDiffusion:
         # Physics-aware loss: approximate denoised output
         # Use x0 prediction formula: x0 ≈ (x_t - sqrt(1-α̅) * ε) / sqrt(α̅)
         alpha_bar = self.scheduler.alphas_cumprod[timesteps].view(B, 1, 1, 1).to(self.device)
-        predicted_x0 = (noisy_target - (1 - alpha_bar).sqrt() * noise_pred) / alpha_bar.sqrt()
-        
+        predicted_x0_base = (noisy_target - (1 - alpha_bar).sqrt() * noise_pred) / alpha_bar.sqrt()
+
+        if self.use_residual_prediction:
+            predicted_x0 = predicted_x0_base + last_cond
+        else:
+            predicted_x0 = predicted_x0_base
+
         # Clamp predicted_x0 tightly: latents are [-1, 1], so allow [-3, 3] conservatively
         # (NOT [-10, 10] which allows 10x larger values and destabilizes losses)
         predicted_x0 = torch.clamp(predicted_x0, -3.0, 3.0)
-
-        last_cond = history_latents[:, -1]  # [B, 4, 64, 64]
         
         # PHYSICS LOSS SCHEDULING: Only apply at low timesteps (high alpha_bar)
         # where x0 reconstruction is meaningful and stable.
@@ -263,6 +288,52 @@ class MeghdootDiffusion:
         # Only apply when significantly off-target (not during high-noise timesteps where x0 is garbage)
         latent_l1_loss = F.l1_loss(predicted_x0, target_latent) * physics_mask.mean()
 
+        # Direct x0 reconstruction objective with optional event up-weighting.
+        x0_recon_loss = torch.tensor(0.0, device=self.device)
+        if self.x0_recon_weight > 0:
+            if self.event_focus_weight > 0:
+                # Weight map in latent space: emphasize larger-magnitude structures.
+                event_map = (target_latent.abs() > self.event_focus_threshold).float()
+                weight_map = 1.0 + self.event_focus_weight * event_map
+                x0_recon_loss = ((predicted_x0 - target_latent).abs() * weight_map).mean()
+            else:
+                x0_recon_loss = F.l1_loss(predicted_x0, target_latent)
+            x0_recon_loss = x0_recon_loss * physics_mask.mean()
+
+        # Edge-consistency loss helps preserve morphology and sharp cloud boundaries.
+        edge_loss = torch.tensor(0.0, device=self.device)
+        if self.edge_loss_weight > 0:
+            # Sobel filters applied per channel.
+            sobel_x = torch.tensor(
+                [[[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]],
+                device=self.device,
+                dtype=predicted_x0.dtype,
+            ).unsqueeze(0)
+            sobel_y = torch.tensor(
+                [[[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]]],
+                device=self.device,
+                dtype=predicted_x0.dtype,
+            ).unsqueeze(0)
+            c = predicted_x0.shape[1]
+            sobel_x = sobel_x.expand(c, 1, 3, 3)
+            sobel_y = sobel_y.expand(c, 1, 3, 3)
+
+            pred_gx = F.conv2d(predicted_x0, sobel_x, padding=1, groups=c)
+            pred_gy = F.conv2d(predicted_x0, sobel_y, padding=1, groups=c)
+            tgt_gx = F.conv2d(target_latent, sobel_x, padding=1, groups=c)
+            tgt_gy = F.conv2d(target_latent, sobel_y, padding=1, groups=c)
+            edge_loss = (F.l1_loss(pred_gx, tgt_gx) + F.l1_loss(pred_gy, tgt_gy)) * 0.5
+            edge_loss = edge_loss * physics_mask.mean()
+
+        # Contrast loss prevents gray/low-dynamic-range collapse.
+        contrast_loss = torch.tensor(0.0, device=self.device)
+        if self.contrast_loss_weight > 0:
+            # Compute per-sample, per-channel std over spatial dimensions.
+            pred_std = predicted_x0.flatten(2).std(dim=-1)
+            tgt_std = target_latent.flatten(2).std(dim=-1)
+            contrast_loss = F.l1_loss(pred_std, tgt_std)
+            contrast_loss = contrast_loss * physics_mask.mean()
+
         # Temporal consistency loss (optical-flow warping between last cond & prediction)
         temporal_loss = torch.tensor(0.0, device=self.device)
         if self.temporal_loss_enabled:
@@ -282,6 +353,9 @@ class MeghdootDiffusion:
             + self.physics_weight * phys_loss
             + grad_loss
             + self.latent_l1_weight * latent_l1_loss
+            + self.x0_recon_weight * x0_recon_loss
+            + self.edge_loss_weight * edge_loss
+            + self.contrast_loss_weight * contrast_loss
             + (self.temporal_weight * temporal_loss if self.temporal_loss_enabled else 0.0)
         )
 
@@ -291,6 +365,9 @@ class MeghdootDiffusion:
             "physics_loss": phys_loss,
             "grad_loss": grad_loss,
             "latent_l1_loss": latent_l1_loss,
+            "x0_recon_loss": x0_recon_loss,
+            "edge_loss": edge_loss,
+            "contrast_loss": contrast_loss,
             "temporal_loss": temporal_loss,
         }
 

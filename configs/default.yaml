@@ -170,12 +170,18 @@ diffusion:
     mixed_precision: "fp16"
     max_grad_norm: 0.5
     latent_l1_weight: 0.0         # Option A: disable latent-space L1 regularization
+    residual_prediction: true      # predict latent residual (x_t - x_{t-1}) instead of absolute latent
+    x0_recon_weight: 0.1           # direct latent reconstruction supervision (helps preserve structure)
+    event_focus_weight: 1.5        # up-weight high-magnitude latent regions (improves extremes)
+    event_focus_threshold: 0.35    # latent magnitude threshold for event emphasis
+    edge_loss_weight: 0.05         # morphology-preserving edge consistency in latent space
+    contrast_loss_weight: 0.05     # match latent dynamic range to avoid gray collapse
     save_every_n_epochs: 10       # save checkpoints every 10 epochs; epoch 100 is still saved explicitly
 
   # Inference
   inference:
     num_inference_steps: 50
-    guidance_scale: 2.5           # use CFG to enforce geography conditioning
+    guidance_scale: 1.0           # 2.5 degraded skill in aligned eval; keep conditional path without over-guidance
     prediction_horizon_hours: 3
 
   checkpoint_dir: "checkpoints/diffusion"

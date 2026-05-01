@@ -158,6 +158,9 @@ def main() -> None:
         epoch_mse = 0.0
         epoch_phys = 0.0
         epoch_latent_l1 = 0.0
+        epoch_x0_recon = 0.0
+        epoch_edge = 0.0
+        epoch_contrast = 0.0
         epoch_temporal = 0.0
         epoch_data_time = 0.0
         epoch_step_time = 0.0
@@ -203,6 +206,9 @@ def main() -> None:
             epoch_mse += losses["mse_loss"].item()
             epoch_phys += losses["physics_loss"].item()
             epoch_latent_l1 += losses["latent_l1_loss"].item()
+            epoch_x0_recon += losses["x0_recon_loss"].item()
+            epoch_edge += losses["edge_loss"].item()
+            epoch_contrast += losses["contrast_loss"].item()
             epoch_temporal += losses["temporal_loss"].item()
             epoch_data_time += data_time
             epoch_step_time += time.perf_counter() - step_start
@@ -231,6 +237,9 @@ def main() -> None:
         avg_mse = epoch_mse / n
         avg_phys = epoch_phys / n
         avg_latent_l1 = epoch_latent_l1 / n
+        avg_x0_recon = epoch_x0_recon / n
+        avg_edge = epoch_edge / n
+        avg_contrast = epoch_contrast / n
         avg_temporal = epoch_temporal / n
         avg_data_time = epoch_data_time / n
         avg_step_time = epoch_step_time / n
@@ -240,7 +249,8 @@ def main() -> None:
         log.info(
             f"Epoch {epoch:3d}/{t_cfg['epochs']} │ "
             f"loss={avg_loss:.5f}  mse={avg_mse:.5f}  phys={avg_phys:.5f}  "
-            f"latent_l1={avg_latent_l1:.5f}  temporal={avg_temporal:.5f}  "
+            f"latent_l1={avg_latent_l1:.5f}  x0_recon={avg_x0_recon:.5f}  edge={avg_edge:.5f}  "
+            f"contrast={avg_contrast:.5f}  temporal={avg_temporal:.5f}  "
             f"lr={scheduler.get_last_lr()[0]:.2e}  data_time={avg_data_time:.2f}s  "
             f"step_time={avg_step_time:.2f}s  grad_norm={avg_grad_norm:.2f}  epoch_time={epoch_time:.1f}s"
         )
@@ -253,6 +263,9 @@ def main() -> None:
                 "diffusion/mse": avg_mse,
                 "diffusion/physics": avg_phys,
                 "diffusion/latent_l1": avg_latent_l1,
+                "diffusion/x0_recon": avg_x0_recon,
+                "diffusion/edge": avg_edge,
+                "diffusion/contrast": avg_contrast,
                 "diffusion/temporal": avg_temporal,
                 "diffusion/lr": scheduler.get_last_lr()[0],
                 "diffusion/data_time": avg_data_time,
