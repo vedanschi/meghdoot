@@ -77,6 +77,12 @@ class ConvLSTMDiffusionHybrid:
             hidden_dims=conv_cfg["hidden_dims"],
             kernel_size=conv_cfg["kernel_size"],
         ).to(self.device)
+        
+        # Manually move ConvLSTM parameters/buffers since it may not support .to() properly
+        for param in self.convlstm.parameters():
+            param.data = param.data.to(self.device)
+        for buf in self.convlstm.buffers():
+            buf.data = buf.data.to(self.device)
 
         if convlstm_ckpt is not None:
             load_checkpoint_any(self.convlstm, convlstm_ckpt, self.device)
@@ -94,6 +100,12 @@ class ConvLSTMDiffusionHybrid:
         self.vae.to(self.device)
         self.diffusion.to(self.device)
         self.convlstm.to(self.device)
+        
+        # Manually move ConvLSTM parameters/buffers since it may not support .to() properly
+        for param in self.convlstm.parameters():
+            param.data = param.data.to(self.device)
+        for buf in self.convlstm.buffers():
+            buf.data = buf.data.to(self.device)
         return self
 
     def train(self, mode: bool = True):
