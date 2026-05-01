@@ -47,6 +47,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train Latent Diffusion Model")
     parser.add_argument("--config", default=None)
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="Number of epochs to run for this invocation (resume-relative when --resume is set)",
+    )
+    parser.add_argument(
+        "--log-images-every",
+        type=int,
+        default=None,
+        help="Override image logging cadence for this run",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -54,6 +66,12 @@ def main() -> None:
     setup_wandb(cfg)
 
     t_cfg = cfg["diffusion"]["training"]
+    run_epochs = args.epochs if args.epochs is not None else t_cfg["epochs"]
+    log_images_every = (
+        args.log_images_every
+        if args.log_images_every is not None
+        else cfg.get("logging", {}).get("wandb", {}).get("log_images_every_n_epochs", 10)
+    )
     requested_device = cfg["project"].get("device", "cuda")
     device = get_device(requested_device)
     if requested_device == "cuda" and device.type != "cuda":
@@ -89,7 +107,7 @@ def main() -> None:
             run.summary["data/num_latents"] = len(dataset.files)
             run.summary["data/num_sequences"] = len(dataset)
             run.summary["train/batch_size"] = t_cfg["batch_size"]
-            run.summary["train/epochs"] = t_cfg["epochs"]
+            run.summary["train/epochs"] = run_epochs
             run.summary["train/accumulation_steps"] = t_cfg["gradient_accumulation_steps"]
             run.summary["env/device"] = str(device)
     except Exception:
@@ -104,7 +122,7 @@ def main() -> None:
         weight_decay=1e-4,
     )
 
-    total_steps = t_cfg["epochs"] * len(dataloader) // t_cfg["gradient_accumulation_steps"]
+    total_steps = run_epochs * len(dataloader) // t_cfg["gradient_accumulation_steps"]
     warmup_steps = t_cfg["warmup_steps"]
 
     def lr_lambda(step: int) -> float:
@@ -119,6 +137,7 @@ def main() -> None:
     start_epoch = 0
     if args.resume:
         start_epoch = model.load(args.resume, optimizer=optimizer, lr_scheduler=scheduler)
+    final_epoch = start_epoch + run_epochs
 
     # Mixed precision
     use_amp = t_cfg.get("mixed_precision", "fp16") == "fp16" and device.type == "cuda"
@@ -127,12 +146,13 @@ def main() -> None:
 
     # ── Training Loop ─────────────────────────────
     log.info("═══ Starting Diffusion Training ═══")
-    log.info(f"  Epochs: {t_cfg['epochs']}  |  Batch: {t_cfg['batch_size']}  "
+    log.info(f"  Run epochs: {run_epochs}  |  Total target epoch: {final_epoch}  |  Batch: {t_cfg['batch_size']}  "
              f"|  Accum: {t_cfg['gradient_accumulation_steps']}  |  AMP: {use_amp}")
 
     global_step = 0
 
-    for epoch in range(start_epoch + 1, t_cfg["epochs"] + 1):
+    for epoch in range(start_epoch + 1, final_epoch + 1):
+        run_epoch = epoch - start_epoch
         model.unet.train()
         epoch_loss = 0.0
         epoch_mse = 0.0
@@ -147,7 +167,7 @@ def main() -> None:
         optimizer.zero_grad()
 
         pbar = tqdm(enumerate(dataloader, 1), total=len(dataloader), 
-                    desc=f"Epoch {epoch:3d}/{t_cfg['epochs']}", 
+                    desc=f"Epoch {run_epoch:3d}/{run_epochs} (abs {epoch})", 
                     unit="batch", leave=True, colour="green")
         
         batch_wait_start = time.perf_counter()
@@ -246,7 +266,7 @@ def main() -> None:
 
         # 2. CHECKPOINT EVERY EPOCH: Pass optimizer and scheduler states
         save_freq = t_cfg.get("save_every_n_epochs", 1)
-        if epoch % save_freq == 0 or epoch == t_cfg["epochs"]:
+        if run_epoch % save_freq == 0 or epoch == final_epoch:
             model.save(
                 cfg["diffusion"]["checkpoint_dir"], 
                 epoch, 
@@ -255,10 +275,7 @@ def main() -> None:
             )
 
         # Sample visualization every N epochs
-        log_img_every = cfg.get("logging", {}).get("wandb", {}).get(
-            "log_images_every_n_epochs", 10
-        )
-        if epoch % log_img_every == 0:
+        if log_images_every > 0 and run_epoch % log_images_every == 0:
             _log_sample(model, dataset, device, epoch)
 
     log.info("Diffusion training complete ✓")

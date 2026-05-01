@@ -153,10 +153,10 @@ diffusion:
 
   # Physics-aware loss
   physics_loss:
-    enabled: true
-    # Reduced weights to avoid instability; increase later if needed
-    mass_conservation_weight: 0.0001
-    gradient_penalty_weight: 0.0001
+    enabled: false
+    # Option A: remove smoothing penalties entirely for the recovery test
+    mass_conservation_weight: 0.0
+    gradient_penalty_weight: 0.0
 
   # Training
   training:
@@ -169,7 +169,7 @@ diffusion:
     ema_decay: 0.9999
     mixed_precision: "fp16"
     max_grad_norm: 0.5
-    latent_l1_weight: 0.005       # reduced to preserve cloud texture / avoid over-smoothing
+    latent_l1_weight: 0.0         # Option A: disable latent-space L1 regularization
     save_every_n_epochs: 10       # save checkpoints every 10 epochs; epoch 100 is still saved explicitly
 
   # Inference

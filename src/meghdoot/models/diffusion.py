@@ -318,6 +318,8 @@ class MeghdootDiffusion:
         cfg_scale = guidance_scale
         if cfg_scale is None:
             cfg_scale = self.diff_cfg.get("inference", {}).get("guidance_scale", 1.0)
+
+        history_latents = history_latents.to(self.device)
         self.scheduler.set_timesteps(steps, device=self.device)
 
         B = history_latents.size(0)

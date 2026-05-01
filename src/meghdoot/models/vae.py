@@ -184,13 +184,14 @@ class SatelliteVAE:
     @torch.no_grad()
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """Encode 2-channel pixel-space image to latent."""
+        x = x.to(self.device)
         posterior = self.vae.encode(x).latent_dist
         return posterior.sample() * self.vae.config.scaling_factor
 
     @torch.no_grad()
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """Decode latent back to 2-channel pixel space."""
-        z = z / self.vae.config.scaling_factor
+        z = z.to(self.device) / self.vae.config.scaling_factor
         return self.vae.decode(z).sample
 
     def load(self, ckpt_path: str | Path) -> None:
