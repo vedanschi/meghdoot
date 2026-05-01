@@ -1,0 +1,236 @@
+"""Train the ConvLSTM + diffusion hybrid refiner."""
+
+from __future__ import annotations
+
+import argparse
+import math
+import time
+
+import torch
+from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from meghdoot.data.dataset import INSATSequenceDataset
+from meghdoot.models.hybrid import ConvLSTMDiffusionHybrid
+from meghdoot.utils.config import load_config
+from meghdoot.utils.helpers import get_device, seed_everything
+from meghdoot.utils.logging import get_logger, setup_wandb
+
+
+log = get_logger(__name__)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train the ConvLSTM + diffusion hybrid")
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--resume", default=None, help="Optional diffusion checkpoint to resume from")
+    parser.add_argument("--convlstm-ckpt", default=None, help="ConvLSTM checkpoint used as motion prior")
+    parser.add_argument("--epochs", type=int, default=None, help="Number of epochs for this run")
+    parser.add_argument("--log-images-every", type=int, default=None, help="Image logging cadence")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+    seed_everything(cfg["project"]["seed"])
+    setup_wandb(cfg)
+
+    t_cfg = cfg["diffusion"]["training"]
+    run_epochs = args.epochs if args.epochs is not None else t_cfg["epochs"]
+    log_images_every = (
+        args.log_images_every
+        if args.log_images_every is not None
+        else cfg.get("logging", {}).get("wandb", {}).get("log_images_every_n_epochs", 10)
+    )
+
+    requested_device = cfg["project"].get("device", "cuda")
+    device = get_device(requested_device)
+    if requested_device == "cuda" and device.type != "cuda":
+        raise RuntimeError("CUDA was requested but is not available in the current environment.")
+    log.info(f"Using device: {device}")
+
+    dataset = INSATSequenceDataset(
+        data_dir=cfg["data"]["paths"]["processed"],
+        num_history=cfg["diffusion"]["conditioning"]["num_history_frames"],
+    )
+    dataloader = DataLoader(
+        dataset,
+        batch_size=t_cfg["batch_size"],
+        shuffle=True,
+        num_workers=cfg["data"]["num_workers"],
+        prefetch_factor=cfg["data"].get("prefetch_factor", 2) if cfg["data"]["num_workers"] > 0 else None,
+        persistent_workers=False,
+        pin_memory=torch.cuda.is_available(),
+        drop_last=True,
+    )
+
+    convlstm_ckpt = args.convlstm_ckpt or cfg.get("hybrid", {}).get("convlstm_ckpt")
+    model = ConvLSTMDiffusionHybrid(
+        cfg,
+        convlstm_ckpt=convlstm_ckpt,
+        freeze_convlstm=cfg.get("hybrid", {}).get("freeze_convlstm", True),
+    ).to(device)
+
+    optimizer = torch.optim.AdamW(
+        model.diffusion.unet.parameters(),
+        lr=t_cfg["learning_rate"],
+        weight_decay=1e-4,
+    )
+
+    total_steps = run_epochs * len(dataloader) // t_cfg["gradient_accumulation_steps"]
+    warmup_steps = t_cfg["warmup_steps"]
+
+    def lr_lambda(step: int) -> float:
+        if step < warmup_steps:
+            return step / max(1, warmup_steps)
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return 0.5 * (1 + math.cos(math.pi * progress))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    start_epoch = 0
+    if args.resume:
+        start_epoch = model.diffusion.load(args.resume, optimizer=optimizer, lr_scheduler=scheduler)
+    final_epoch = start_epoch + run_epochs
+
+    use_amp = t_cfg.get("mixed_precision", "fp16") == "fp16" and device.type == "cuda"
+    scaler = GradScaler(enabled=use_amp)
+
+    log.info("═══ Starting Hybrid ConvLSTM + Diffusion Training ═══")
+    log.info(
+        f"  Run epochs: {run_epochs}  |  Total target epoch: {final_epoch}  |  Batch: {t_cfg['batch_size']}"
+        f"  |  Accum: {t_cfg['gradient_accumulation_steps']}  |  AMP: {use_amp}"
+    )
+
+    global_step = 0
+
+    for epoch in range(start_epoch + 1, final_epoch + 1):
+        run_epoch = epoch - start_epoch
+        model.diffusion.unet.train()
+        model.convlstm.eval()
+
+        epoch_loss = 0.0
+        epoch_mse = 0.0
+        epoch_x0_recon = 0.0
+        epoch_edge = 0.0
+        epoch_contrast = 0.0
+        epoch_start = time.perf_counter()
+
+        optimizer.zero_grad()
+
+        pbar = tqdm(
+            enumerate(dataloader, 1),
+            total=len(dataloader),
+            desc=f"Epoch {run_epoch:3d}/{run_epochs} (abs {epoch})",
+            unit="batch",
+            leave=True,
+            colour="cyan",
+        )
+
+        batch_wait_start = time.perf_counter()
+        for step, batch in pbar:
+            batch_ready = time.perf_counter()
+            data_time = batch_ready - batch_wait_start
+            step_start = batch_ready
+
+            history = batch["history"].to(device, non_blocking=torch.cuda.is_available())
+            target = batch["target"].to(device, non_blocking=torch.cuda.is_available())
+
+            with autocast(enabled=use_amp):
+                losses = model.training_step(history, target)
+                loss = losses["loss"] / t_cfg["gradient_accumulation_steps"]
+
+            scaler.scale(loss).backward()
+
+            if step % t_cfg["gradient_accumulation_steps"] == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.diffusion.unet.parameters(), t_cfg["max_grad_norm"])
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                scheduler.step()
+                model.diffusion.ema.update(model.diffusion.unet)
+                global_step += 1
+
+            epoch_loss += losses["loss"].item()
+            epoch_mse += losses["mse_loss"].item()
+            epoch_x0_recon += losses["x0_recon_loss"].item()
+            epoch_edge += losses["edge_loss"].item()
+            epoch_contrast += losses["contrast_loss"].item()
+
+            pbar.set_postfix(
+                {
+                    "loss": f"{losses['loss'].item():.4f}",
+                    "mse": f"{losses['mse_loss'].item():.4f}",
+                    "data": f"{data_time:.2f}s",
+                    "step": f"{time.perf_counter() - step_start:.2f}s",
+                }
+            )
+
+            batch_wait_start = time.perf_counter()
+
+        n = len(dataloader)
+        avg_loss = epoch_loss / n
+        avg_mse = epoch_mse / n
+        avg_x0_recon = epoch_x0_recon / n
+        avg_edge = epoch_edge / n
+        avg_contrast = epoch_contrast / n
+        epoch_time = time.perf_counter() - epoch_start
+
+        if not math.isfinite(avg_loss):
+            log.error(f"Loss exploded (NaN) at epoch {epoch}. Stopping to protect weights.")
+            break
+
+        log.info(
+            f"Epoch {epoch:3d}/{final_epoch} │ loss={avg_loss:.5f}  mse={avg_mse:.5f}  "
+            f"x0_recon={avg_x0_recon:.5f}  edge={avg_edge:.5f}  contrast={avg_contrast:.5f}  "
+            f"lr={scheduler.get_last_lr()[0]:.2e}  epoch_time={epoch_time:.1f}s"
+        )
+
+        try:
+            import wandb
+
+            if getattr(wandb, "run", None) is not None:
+                wandb.log(
+                    {
+                        "hybrid/loss": avg_loss,
+                        "hybrid/mse_loss": avg_mse,
+                        "hybrid/x0_recon_loss": avg_x0_recon,
+                        "hybrid/edge_loss": avg_edge,
+                        "hybrid/contrast_loss": avg_contrast,
+                        "hybrid/lr": scheduler.get_last_lr()[0],
+                        "hybrid/epoch": epoch,
+                    },
+                    step=global_step,
+                )
+        except Exception:
+            pass
+
+        if epoch % log_images_every == 0:
+            try:
+                sample = dataset[0]
+                preview_history = sample["history"].unsqueeze(0).to(device)
+                preview_target = sample["target"].unsqueeze(0).to(device)
+                preview_pred = model.sample(
+                    preview_history,
+                    num_inference_steps=cfg["diffusion"]["inference"]["num_inference_steps"],
+                    guidance_scale=cfg["diffusion"]["inference"].get("guidance_scale", 1.0),
+                )
+                import wandb
+
+                if getattr(wandb, "run", None) is not None:
+                    wandb.log(
+                        {
+                            "hybrid/sample_target": wandb.Image(preview_target[0, 0].detach().cpu().numpy()),
+                            "hybrid/sample_pred": wandb.Image(preview_pred[0, 0].detach().cpu().numpy()),
+                        },
+                        step=global_step,
+                    )
+            except Exception as exc:
+                log.warning(f"Could not log hybrid samples: {exc}")
+
+        save_dir = cfg["diffusion"]["checkpoint_dir"].replace("diffusion", "hybrid")
+        model.diffusion.save(save_dir, epoch, optimizer=optimizer, lr_scheduler=scheduler)
+
+
+if __name__ == "__main__":
+    main()

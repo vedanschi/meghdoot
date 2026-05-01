@@ -186,6 +186,13 @@ diffusion:
 
   checkpoint_dir: "checkpoints/diffusion"
 
+# ── Hybrid ConvLSTM + Diffusion Refiner ─────────
+hybrid:
+  enabled: false
+  convlstm_ckpt: "checkpoints/baselines/convlstm.pt"
+  freeze_convlstm: true
+  checkpoint_dir: "checkpoints/hybrid"
+
 # ── Phase 4: Evaluation & Baselines ─────────────
 evaluation:
   metrics: ["ssim", "rmse", "csi", "psnr", "fid"]

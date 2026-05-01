@@ -188,11 +188,47 @@ class MeghdootDiffusion:
             f"{sum(p.numel() for p in self.unet.parameters())/1e6:.1f}M params"
         )
 
+    def _prepare_conditioning(
+        self,
+        history_latents: torch.Tensor,
+        base_latent: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Build the conditioning tensor and residual reference latent.
+
+        When ``base_latent`` is provided, the last history frame is replaced by the
+        ConvLSTM forecast so the UNet still sees a 3-frame conditioning stack while
+        the residual target is anchored to the forecast instead of the raw last input.
+        """
+        B = history_latents.size(0)
+
+        if base_latent is not None:
+            if base_latent.dim() == 3:
+                base_latent = base_latent.unsqueeze(0)
+            if base_latent.dim() != 4:
+                raise ValueError("base_latent must have shape [B, C, H, W] or [C, H, W]")
+            if base_latent.size(0) != B:
+                if base_latent.size(0) == 1:
+                    base_latent = base_latent.expand(B, -1, -1, -1)
+                else:
+                    raise ValueError("base_latent batch size must match history_latents")
+
+            if history_latents.size(1) > 1:
+                cond_frames = torch.cat([history_latents[:, :-1], base_latent.unsqueeze(1)], dim=1)
+            else:
+                cond_frames = base_latent.unsqueeze(1)
+
+            cond = cond_frames.view(B, -1, *cond_frames.shape[-2:])
+            return cond, base_latent
+
+        cond = history_latents.view(B, -1, *history_latents.shape[-2:])
+        return cond, history_latents[:, -1]
+
     # ── Training Step ──────────────────────────────
     def training_step(
         self,
         history_latents: torch.Tensor,
         target_latent: torch.Tensor,
+        base_latent: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """One forward + loss computation.
 
@@ -216,7 +252,7 @@ class MeghdootDiffusion:
             target_latent = target_latent.to(self.device)
 
         # Flatten history: [B, 3, 4, 64, 64] → [B, 12, 64, 64]
-        cond = history_latents.view(B, -1, *history_latents.shape[-2:])
+        cond, reference_latent = self._prepare_conditioning(history_latents, base_latent)
 
         # Conditioning dropout (classifier-free guidance training)
         if self.cond_dropout_prob > 0:
@@ -231,11 +267,9 @@ class MeghdootDiffusion:
             (B,), device=self.device
         ).long()
 
-        last_cond = history_latents[:, -1]  # [B, 4, 64, 64]
-
         # Add noise to either absolute target or residual target.
         if self.use_residual_prediction:
-            diffusion_target = target_latent - last_cond
+            diffusion_target = target_latent - reference_latent
         else:
             diffusion_target = target_latent
 
@@ -259,7 +293,7 @@ class MeghdootDiffusion:
         predicted_x0_base = (noisy_target - (1 - alpha_bar).sqrt() * noise_pred) / alpha_bar.sqrt()
 
         if self.use_residual_prediction:
-            predicted_x0 = predicted_x0_base + last_cond
+            predicted_x0 = predicted_x0_base + reference_latent
         else:
             predicted_x0 = predicted_x0_base
 
@@ -273,7 +307,7 @@ class MeghdootDiffusion:
         # Threshold: only apply physics when alpha_bar > 0.1 (very low noise, where x0 is reliable)
         physics_mask = (alpha_bar > 0.1).float()  # shape [B, 1, 1, 1]
         if physics_mask.mean() > 0:
-            phys_loss = self.mass_loss(predicted_x0, last_cond)
+            phys_loss = self.mass_loss(predicted_x0, reference_latent)
             phys_loss = phys_loss * physics_mask.mean()  # scale by proportion of valid timesteps
         else:
             phys_loss = torch.tensor(0.0, device=self.device)  # no valid timesteps, zero out
@@ -378,6 +412,7 @@ class MeghdootDiffusion:
         history_latents: torch.Tensor,
         num_inference_steps: int | None = None,
         guidance_scale: float | None = None,
+        base_latent: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Generate the next latent frame given history.
 
@@ -400,7 +435,7 @@ class MeghdootDiffusion:
         self.scheduler.set_timesteps(steps, device=self.device)
 
         B = history_latents.size(0)
-        cond = history_latents.view(B, -1, *history_latents.shape[-2:])
+        cond, reference_latent = self._prepare_conditioning(history_latents, base_latent)
 
         # Start from pure noise
         C_out = self.diff_cfg["unet"]["out_channels"]
@@ -422,6 +457,8 @@ class MeghdootDiffusion:
 
             x_t = self.scheduler.step(noise_pred, t, x_t).prev_sample
 
+        if self.use_residual_prediction:
+            return x_t + reference_latent
         return x_t
 
     # ── Checkpointing ──────────────────────────────

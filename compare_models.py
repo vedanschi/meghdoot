@@ -23,6 +23,7 @@ from typing import cast
 from meghdoot.data.dataset import INSATSequenceDataset
 from meghdoot.evaluation.baselines import ConvLSTMPredictor
 from meghdoot.evaluation.metrics import compute_all_metrics
+from meghdoot.models.hybrid import ConvLSTMDiffusionHybrid
 from meghdoot.models.diffusion import MeghdootDiffusion
 from meghdoot.models.vae import SatelliteVAE
 from meghdoot.utils.config import load_config
@@ -69,9 +70,16 @@ def load_checkpoint_any(module: torch.nn.Module, ckpt_path: Path, device: torch.
         module.load_state_dict(cleaned, strict=False)
 
 
-def save_panels(out_dir: Path, target: np.ndarray, meghdoot: np.ndarray, convlstm: np.ndarray, idx: int) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    panels = [("Target", target), ("Meghdoot", meghdoot), ("ConvLSTM", convlstm)]
+def save_panels(
+    out_dir: Path,
+    target: np.ndarray,
+    diffusion: np.ndarray,
+    hybrid: np.ndarray,
+    convlstm: np.ndarray,
+    idx: int,
+) -> None:
+    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    panels = [("Target", target), ("Diffusion", diffusion), ("Hybrid", hybrid), ("ConvLSTM", convlstm)]
 
     for ax, (title, image) in zip(axes, panels):
         ax.imshow(image, cmap="gray", vmin=-1, vmax=1)
@@ -136,6 +144,14 @@ def main() -> None:
     diffusion.eval()
     log.info(f"Loaded diffusion checkpoint: {args.diffusion_ckpt}")
 
+    hybrid = ConvLSTMDiffusionHybrid(
+        cfg,
+        convlstm_ckpt=convlstm_ckpt,
+        freeze_convlstm=cfg.get("hybrid", {}).get("freeze_convlstm", True),
+    ).to(device)
+    hybrid.eval()
+    log.info("Loaded hybrid ConvLSTM + diffusion refiner")
+
     guidance_scale = (
         args.guidance_scale
         if args.guidance_scale is not None
@@ -154,6 +170,7 @@ def main() -> None:
     log.info(f"Loaded ConvLSTM checkpoint: {convlstm_ckpt}")
 
     meghdoot_metrics: list[dict[str, float]] = []
+    hybrid_metrics: list[dict[str, float]] = []
     convlstm_metrics: list[dict[str, float]] = []
 
     sample_count = min(args.n_samples, len(pixel_dataset))
@@ -176,26 +193,36 @@ def main() -> None:
             )
             pred_pixel = vae.decode(pred_latent)[0, 0].detach().cpu().numpy()
 
+            pred_hybrid = hybrid.sample(
+                history_pixel,
+                num_inference_steps=args.num_inference_steps,
+                guidance_scale=guidance_scale,
+            )[0, 0].detach().cpu().numpy()
+
             pred_conv = convlstm(history_pixel)[0, 0].detach().cpu().numpy()
 
             m_metrics = compute_all_metrics(pred_pixel, target, csi_thresholds=csi_thresholds)
+            h_metrics = compute_all_metrics(pred_hybrid, target, csi_thresholds=csi_thresholds)
             c_metrics = compute_all_metrics(pred_conv, target, csi_thresholds=csi_thresholds)
 
             meghdoot_metrics.append(m_metrics)
+            hybrid_metrics.append(h_metrics)
             convlstm_metrics.append(c_metrics)
 
             if idx < 5:
-                save_panels(out_dir, target, pred_pixel, pred_conv, idx)
+                save_panels(out_dir, target, pred_pixel, pred_hybrid, pred_conv, idx)
 
             log.info(
                 f"[{idx + 1:03d}/{sample_count:03d}] "
-                f"Meghdoot SSIM={m_metrics['ssim']:.4f} RMSE={m_metrics['rmse']:.4f} PSNR={m_metrics['psnr']:.2f} | "
+                f"Diffusion SSIM={m_metrics['ssim']:.4f} RMSE={m_metrics['rmse']:.4f} PSNR={m_metrics['psnr']:.2f} | "
+                f"Hybrid SSIM={h_metrics['ssim']:.4f} RMSE={h_metrics['rmse']:.4f} PSNR={h_metrics['psnr']:.2f} | "
                 f"ConvLSTM SSIM={c_metrics['ssim']:.4f} RMSE={c_metrics['rmse']:.4f} PSNR={c_metrics['psnr']:.2f}"
             )
 
-    summary = {"meghdoot": {}, "convlstm": {}}
+    summary = {"diffusion": {}, "hybrid": {}, "convlstm": {}}
     for key in meghdoot_metrics[0].keys():
-        summary["meghdoot"][key] = float(np.mean([m[key] for m in meghdoot_metrics]))
+        summary["diffusion"][key] = float(np.mean([m[key] for m in meghdoot_metrics]))
+        summary["hybrid"][key] = float(np.mean([m[key] for m in hybrid_metrics]))
         summary["convlstm"][key] = float(np.mean([m[key] for m in convlstm_metrics]))
 
     with open(out_dir / "metrics.json", "w") as f:
@@ -207,34 +234,34 @@ def main() -> None:
     print(f"{'Metric':<16} {'Meghdoot':<16} {'ConvLSTM':<16} {'Winner'}")
     print("-" * 78)
 
-    meghdoot_wins = 0
+    hybrid_wins = 0
     convlstm_wins = 0
 
     for metric_name in ["ssim", "rmse", "psnr", "csi_600", "csi_700", "csi_800"]:
-        if metric_name not in summary["meghdoot"]:
+        if metric_name not in summary["hybrid"]:
             continue
 
-        m_val = summary["meghdoot"][metric_name]
+        h_val = summary["hybrid"][metric_name]
         c_val = summary["convlstm"][metric_name]
         higher_is_better = metric_name != "rmse"
 
         if higher_is_better:
-            winner = "Meghdoot" if m_val > c_val else "ConvLSTM"
+            winner = "Hybrid" if h_val > c_val else "ConvLSTM"
         else:
-            winner = "Meghdoot" if m_val < c_val else "ConvLSTM"
+            winner = "Hybrid" if h_val < c_val else "ConvLSTM"
 
-        if winner == "Meghdoot":
-            meghdoot_wins += 1
+        if winner == "Hybrid":
+            hybrid_wins += 1
         else:
             convlstm_wins += 1
 
-        print(f"{metric_name:<16} {m_val:<16.4f} {c_val:<16.4f} {winner}")
+        print(f"{metric_name:<16} {h_val:<16.4f} {c_val:<16.4f} {winner}")
 
     print("-" * 78)
-    print(f"Overall: Meghdoot {meghdoot_wins}  |  ConvLSTM {convlstm_wins}")
-    if meghdoot_wins > convlstm_wins:
-        print("Result: Meghdoot is better on the numeric metrics.")
-    elif meghdoot_wins < convlstm_wins:
+    print(f"Overall: Hybrid {hybrid_wins}  |  ConvLSTM {convlstm_wins}")
+    if hybrid_wins > convlstm_wins:
+        print("Result: Hybrid is better on the numeric metrics.")
+    elif hybrid_wins < convlstm_wins:
         print("Result: ConvLSTM is better on the numeric metrics.")
     else:
         print("Result: Tie on the numeric metrics.")

@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader
 from meghdoot.data.dataset import INSATSequenceDataset, LatentSequenceDataset
 from meghdoot.evaluation.baselines import ConvLSTMPredictor, pysteps_forecast
 from meghdoot.evaluation.metrics import compute_all_metrics
+from meghdoot.models.hybrid import ConvLSTMDiffusionHybrid
 from meghdoot.models.diffusion import MeghdootDiffusion
 from meghdoot.models.vae import SatelliteVAE
 from meghdoot.utils.config import load_config
@@ -36,7 +37,6 @@ def evaluate_meghdoot(
     cfg: dict,
     diffusion: MeghdootDiffusion,
     vae: SatelliteVAE,
-    dataset: LatentSequenceDataset,
     pixel_dataset: INSATSequenceDataset,
     device: torch.device,
     n_samples: int = 50,
@@ -46,11 +46,11 @@ def evaluate_meghdoot(
     # Note: These should now represent 10-bit raw thresholds, not Kelvin
     csi_thresholds = cfg["evaluation"].get("csi_thresholds", [600, 700, 800])
 
-    for i in range(min(n_samples, len(dataset))):
-        sample = dataset[i]
+    for i in range(min(n_samples, len(pixel_dataset))):
         pixel_sample = pixel_dataset[i]
 
-        history = sample["history"].unsqueeze(0).to(device)
+        history_pixel = pixel_sample["history"].unsqueeze(0).to(device)
+        history = vae.encode(history_pixel)
         pred_latent = diffusion.sample(history, num_inference_steps=50)
 
         # Decode to pixel space [B, 2, H, W]
@@ -70,6 +70,38 @@ def evaluate_meghdoot(
     for key in metrics_list[0]:
         avg[key] = float(np.mean([m[key] for m in metrics_list]))
 
+    return avg
+
+
+def evaluate_hybrid(
+    cfg: dict,
+    hybrid: ConvLSTMDiffusionHybrid,
+    pixel_dataset: INSATSequenceDataset,
+    device: torch.device,
+    n_samples: int = 50,
+) -> dict[str, float]:
+    """Evaluate the ConvLSTM + diffusion hybrid on the primary TIR1 channel."""
+    metrics_list = []
+    csi_thresholds = cfg["evaluation"].get("csi_thresholds", [600, 700, 800])
+
+    for i in range(min(n_samples, len(pixel_dataset))):
+        pixel_sample = pixel_dataset[i]
+        history_pixel = pixel_sample["history"].unsqueeze(0).to(device)
+        target = pixel_sample["target"][0].numpy()
+
+        pred_pixel = hybrid.sample(
+            history_pixel,
+            num_inference_steps=cfg["diffusion"]["inference"]["num_inference_steps"],
+            guidance_scale=cfg["diffusion"]["inference"].get("guidance_scale", 1.0),
+        )
+        pred_np = pred_pixel[0, 0].detach().cpu().numpy()
+
+        metrics = compute_all_metrics(pred_np, target, csi_thresholds=csi_thresholds)
+        metrics_list.append(metrics)
+
+    avg = {}
+    for key in metrics_list[0]:
+        avg[key] = float(np.mean([m[key] for m in metrics_list]))
     return avg
 
 
@@ -194,17 +226,11 @@ def main() -> None:
     out_dir = Path(cfg["evaluation"]["output_dir"])
     ensure_dir(out_dir)
 
-    # FIX 1: Updated parameters to match dataset.py signature
     past_len = cfg["diffusion"]["conditioning"]["num_history_frames"]
     future_len = cfg.get("diffusion", {}).get("inference", {}).get("prediction_horizon_frames", 6)
 
     pixel_dataset = INSATSequenceDataset(
         data_dir=cfg["data"]["paths"]["processed"],
-        seq_len_past=past_len,
-        seq_len_future=future_len
-    )
-    latent_dataset = LatentSequenceDataset(
-        latent_dir=cfg["data"]["paths"]["latents"],
         seq_len_past=past_len,
         seq_len_future=future_len
     )
@@ -222,14 +248,29 @@ def main() -> None:
     diffusion.load(args.diffusion_ckpt)
     diffusion.eval()
 
+    hybrid = None
+    if args.convlstm_ckpt or cfg.get("hybrid", {}).get("enabled", False):
+        hybrid = ConvLSTMDiffusionHybrid(
+            cfg,
+            convlstm_ckpt=args.convlstm_ckpt or cfg.get("hybrid", {}).get("convlstm_ckpt"),
+            freeze_convlstm=cfg.get("hybrid", {}).get("freeze_convlstm", True),
+        ).to(device)
+        hybrid.eval()
+
     # ── Evaluate ──────────────────────────────────
     log.info("═══ Evaluating Meghdoot-AI ═══")
     meghdoot_metrics = evaluate_meghdoot(
-        cfg, diffusion, vae, latent_dataset, pixel_dataset, device, args.n_samples
+        cfg, diffusion, vae, pixel_dataset, device, args.n_samples
     )
     
     results = {"meghdoot_ai": meghdoot_metrics}
+    hybrid_metrics = {}
     convlstm_metrics = {} # Initialize to prevent NameError
+
+    if hybrid is not None:
+        log.info("═══ Evaluating Hybrid Refiner ═══")
+        hybrid_metrics = evaluate_hybrid(cfg, hybrid, pixel_dataset, device, args.n_samples)
+        results["hybrid"] = hybrid_metrics
 
     if cfg["evaluation"]["baselines"]["convlstm"]["enabled"]:
         log.info("═══ Evaluating ConvLSTM Baseline ═══")
@@ -251,19 +292,13 @@ def main() -> None:
 
     # FIX 3: Robust comparison table
     log.info("\n" + "=" * 60)
-    log.info(f"{'Metric':<20} {'Meghdoot-AI':>15} {'ConvLSTM':>15}")
+    log.info(f"{'Metric':<20} {'Meghdoot-AI':>15} {'Hybrid':>15} {'ConvLSTM':>15}")
     log.info("-" * 60)
     for key in meghdoot_metrics:
         m_val = meghdoot_metrics[key]
+        h_val = hybrid_metrics.get(key, float("nan"))
         c_val = convlstm_metrics.get(key, float("nan"))
         
         # Comparison logic (higher is better for SSIM/CSI, lower for RMSE)
-        better = ""
-        if not np.isnan(c_val):
-            if key == "rmse":
-                better = "✓" if m_val < c_val else ""
-            else:
-                better = "✓" if m_val > c_val else ""
-                
-        log.info(f"{key:<20} {m_val:>15.4f} {c_val:>15.4f}  {better}")
+        log.info(f"{key:<20} {m_val:>15.4f} {h_val:>15.4f} {c_val:>15.4f}")
     log.info("=" * 60)

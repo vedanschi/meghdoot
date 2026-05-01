@@ -161,6 +161,25 @@ def train(ctx, resume):
     train_main()
 
 
+@cli.command("train-hybrid")
+@click.option("--resume", default=None, help="Diffusion checkpoint to resume from")
+@click.option("--convlstm-ckpt", default=None, help="ConvLSTM checkpoint used as motion prior")
+@click.pass_context
+def train_hybrid(ctx, resume, convlstm_ckpt):
+    """Phase 3b – Train the ConvLSTM + diffusion hybrid refiner."""
+    import sys
+
+    sys.argv = ["train_hybrid"]
+    if resume:
+        sys.argv += ["--resume", resume]
+    if convlstm_ckpt:
+        sys.argv += ["--convlstm-ckpt", convlstm_ckpt]
+
+    from meghdoot.training.train_hybrid import main as train_main
+
+    train_main()
+
+
 @cli.command()
 @click.option("--diffusion-ckpt", required=True, help="Diffusion model checkpoint")
 @click.option("--convlstm-ckpt", default=None, help="ConvLSTM baseline checkpoint")
