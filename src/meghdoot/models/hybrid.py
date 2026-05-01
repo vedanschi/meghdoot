@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 
 import torch
@@ -39,61 +38,20 @@ def load_checkpoint_any(module: torch.nn.Module, ckpt_path: str | Path, device: 
     try:
         module.load_state_dict(cleaned, strict=True)
     except RuntimeError:
-        module.load_state_dict(cleaned, strict=False)
-
-
-def _inflate_conv_input_weights(weight: torch.Tensor, target_in_channels: int) -> torch.Tensor:
-    """Expand a conv kernel from a smaller input channel count to a larger one."""
-    out_channels, in_channels, kh, kw = weight.shape
-    if in_channels == target_in_channels:
-        return weight
-
-    if in_channels > target_in_channels:
-        return weight[:, :target_in_channels].contiguous()
-
-    expanded = torch.zeros(out_channels, target_in_channels, kh, kw, device=weight.device, dtype=weight.dtype)
-    expanded[:, :in_channels] = weight
-    if in_channels > 0:
-        repeat_slice = weight.mean(dim=1, keepdim=True)
-        for channel in range(in_channels, target_in_channels):
-            expanded[:, channel : channel + 1] = repeat_slice
-    return expanded
-
-
-def _adapt_convlstm_state_dict(state_dict: dict[str, torch.Tensor], target_in_channels: int, target_out_channels: int) -> dict[str, torch.Tensor]:
-    """Adapt a 2-channel ConvLSTM checkpoint to a wider latent-space model."""
-    adapted = copy.deepcopy(state_dict)
-
-    first_conv_key = "encoder_cells.0.conv.weight"
-    if first_conv_key in adapted:
-        adapted[first_conv_key] = _inflate_conv_input_weights(adapted[first_conv_key], target_in_channels)
-
-    final_weight_key = "decoder.2.weight"
-    final_bias_key = "decoder.2.bias"
-    if final_weight_key in adapted:
-        old_weight = adapted[final_weight_key]
-        out_channels, in_channels, kh, kw = old_weight.shape
-        if out_channels != target_out_channels:
-            new_weight = torch.zeros(target_out_channels, in_channels, kh, kw, device=old_weight.device, dtype=old_weight.dtype)
-            copy_count = min(out_channels, target_out_channels)
-            new_weight[:copy_count] = old_weight[:copy_count]
-            if target_out_channels > out_channels:
-                fill = old_weight.mean(dim=0, keepdim=True)
-                for channel in range(out_channels, target_out_channels):
-                    new_weight[channel : channel + 1] = fill
-            adapted[final_weight_key] = new_weight
-
-    if final_bias_key in adapted:
-        old_bias = adapted[final_bias_key]
-        if old_bias.shape[0] != target_out_channels:
-            new_bias = torch.zeros(target_out_channels, device=old_bias.device, dtype=old_bias.dtype)
-            copy_count = min(old_bias.shape[0], target_out_channels)
-            new_bias[:copy_count] = old_bias[:copy_count]
-            if target_out_channels > old_bias.shape[0]:
-                new_bias[old_bias.shape[0] :] = old_bias.mean()
-            adapted[final_bias_key] = new_bias
-
-    return adapted
+        current_state = module.state_dict()
+        filtered = {
+            key: value
+            for key, value in cleaned.items()
+            if key in current_state and current_state[key].shape == value.shape
+        }
+        missing = sorted(set(current_state) - set(filtered))
+        skipped = sorted(set(cleaned) - set(filtered))
+        if skipped:
+            log.warning(
+                f"Skipping {len(skipped)} ConvLSTM checkpoint tensors with incompatible shapes; "
+                f"loading {len(filtered)} matching tensors instead."
+            )
+        module.load_state_dict(filtered, strict=False)
 
 
 class ConvLSTMDiffusionHybrid:
@@ -121,20 +79,7 @@ class ConvLSTMDiffusionHybrid:
         ).to(self.device)
 
         if convlstm_ckpt is not None:
-            state = torch.load(Path(convlstm_ckpt), map_location=self.device, weights_only=True)
-            if isinstance(state, dict):
-                for key in ("state_dict", "model_state_dict", "ema_state_dict", "model", "weights"):
-                    if key in state and isinstance(state[key], dict):
-                        state = state[key]
-                        break
-            if isinstance(state, dict):
-                state = _adapt_convlstm_state_dict(state, latent_channels, latent_channels)
-                try:
-                    self.convlstm.load_state_dict(state, strict=True)
-                except RuntimeError:
-                    self.convlstm.load_state_dict(state, strict=False)
-            else:
-                load_checkpoint_any(self.convlstm, convlstm_ckpt, self.device)
+            load_checkpoint_any(self.convlstm, convlstm_ckpt, self.device)
             log.info(f"Loaded ConvLSTM checkpoint: {convlstm_ckpt}")
 
         if self.freeze_convlstm:
