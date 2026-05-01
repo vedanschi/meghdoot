@@ -87,7 +87,10 @@ class ConvLSTMDiffusionHybrid:
                 parameter.requires_grad = False
 
     def to(self, device: str | torch.device):
-        self.device = get_device(device)
+        if isinstance(device, torch.device):
+            self.device = device
+        else:
+            self.device = get_device(device)
         self.vae.to(self.device)
         self.diffusion.to(self.device)
         self.convlstm.to(self.device)
