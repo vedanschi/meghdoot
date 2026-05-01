@@ -133,7 +133,11 @@ def main() -> None:
     processed_dir = Path(args.processed_dir or cfg["data"]["paths"]["processed"])
     log.info(f"Using processed test data: {processed_dir}")
 
-    pixel_dataset = INSATSequenceDataset(data_dir=processed_dir, num_history=past_len)
+    pixel_dataset = INSATSequenceDataset(
+        data_dir=processed_dir,
+        num_history=past_len,
+        prefer_local_cache=True,
+    )
 
     vae = SatelliteVAE(cfg).to(device)
     vae.load(cfg["vae"]["pretrained"])
