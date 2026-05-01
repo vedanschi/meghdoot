@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import time
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
@@ -18,6 +20,26 @@ from meghdoot.utils.logging import get_logger, setup_wandb
 
 
 log = get_logger(__name__)
+
+
+def prune_old_checkpoints(checkpoint_dir: Path, keep_last: int) -> None:
+    if keep_last <= 0 or not checkpoint_dir.exists():
+        return
+
+    pattern = re.compile(r"diffusion_epoch(\d+)\.pt$")
+    checkpoints: list[tuple[int, Path]] = []
+    for path in checkpoint_dir.glob("diffusion_epoch*.pt"):
+        match = pattern.search(path.name)
+        if match:
+            checkpoints.append((int(match.group(1)), path))
+
+    checkpoints.sort(key=lambda item: item[0])
+    for _, path in checkpoints[:-keep_last]:
+        try:
+            path.unlink()
+            log.info(f"Pruned old checkpoint: {path.name}")
+        except FileNotFoundError:
+            pass
 
 
 def main() -> None:
@@ -95,6 +117,9 @@ def main() -> None:
 
     use_amp = t_cfg.get("mixed_precision", "fp16") == "fp16" and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp) if device.type == "cuda" else None
+    checkpoint_every = cfg.get("hybrid", {}).get("save_every_n_epochs", 10)
+    keep_last_checkpoints = cfg.get("hybrid", {}).get("keep_last_checkpoints", 3)
+    checkpoint_dir = Path(cfg.get("hybrid", {}).get("checkpoint_dir", cfg["diffusion"]["checkpoint_dir"].replace("diffusion", "hybrid")))
 
     log.info("═══ Starting Hybrid ConvLSTM + Diffusion Training ═══")
     log.info(
@@ -236,8 +261,9 @@ def main() -> None:
             except Exception as exc:
                 log.warning(f"Could not log hybrid samples: {exc}")
 
-        save_dir = cfg["diffusion"]["checkpoint_dir"].replace("diffusion", "hybrid")
-        model.diffusion.save(save_dir, epoch, optimizer=optimizer, lr_scheduler=scheduler)
+        if epoch % checkpoint_every == 0 or epoch == final_epoch:
+            model.diffusion.save(checkpoint_dir, epoch, optimizer=optimizer, lr_scheduler=scheduler)
+            prune_old_checkpoints(checkpoint_dir, keep_last_checkpoints)
 
 
 if __name__ == "__main__":
