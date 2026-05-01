@@ -44,6 +44,7 @@ def main():
     parser.add_argument("--diffusion", required=True)
     parser.add_argument("--convlstm", required=True)
     parser.add_argument("--processed-dir", default="/home/jupyter/local_data")
+    parser.add_argument("--force-top-level", action="store_true", help="Force using the processed-dir top-level .pt files instead of nested stacked_tensors")
     parser.add_argument("--n-samples", type=int, default=100)
     args = parser.parse_args()
 
@@ -52,6 +53,17 @@ def main():
 
     past_len = cfg["diffusion"]["conditioning"]["num_history_frames"]
     dataset = INSATSequenceDataset(data_dir=Path(args.processed_dir), num_history=past_len, prefer_local_cache=False)
+
+    # If user explicitly requests top-level files, override dataset target_dir
+    if args.force_top_level:
+        p = Path(args.processed_dir)
+        top_level_files = list(p.glob("*.pt"))
+        if top_level_files:
+            dataset.target_dir = p
+            dataset.files = sorted(dataset.target_dir.glob("*.pt"))
+            log.info(f"Force-using top-level processed dir: {dataset.target_dir}")
+        else:
+            log.warning(f"No top-level .pt files found in {p}; falling back to dataset discovery")
 
     vae = SatelliteVAE(cfg).to(device)
     # load optional pretrained VAE if configured
