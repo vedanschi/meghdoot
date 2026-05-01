@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from meghdoot.data.dataset import INSATSequenceDataset
+from meghdoot.data.dataset import LatentSequenceDataset
 from meghdoot.models.hybrid import ConvLSTMDiffusionHybrid
 from meghdoot.utils.config import load_config
 from meghdoot.utils.helpers import get_device, seed_everything
@@ -47,10 +47,10 @@ def main() -> None:
         raise RuntimeError("CUDA was requested but is not available in the current environment.")
     log.info(f"Using device: {device}")
 
-    dataset = INSATSequenceDataset(
-        data_dir=cfg["data"]["paths"]["processed"],
+    dataset = LatentSequenceDataset(
+        latent_dir=cfg["data"]["paths"]["latents"],
         num_history=cfg["diffusion"]["conditioning"]["num_history_frames"],
-        prefer_local_cache=False,
+        cache_in_memory=True,
     )
     dataloader = DataLoader(
         dataset,
@@ -227,8 +227,8 @@ def main() -> None:
                 if getattr(wandb, "run", None) is not None:
                     wandb.log(
                         {
-                            "hybrid/sample_target": wandb.Image(preview_target[0, 0].detach().cpu().numpy()),
-                            "hybrid/sample_pred": wandb.Image(preview_pred[0, 0].detach().cpu().numpy()),
+                            "hybrid/sample_target": wandb.Image(model.vae.decode(preview_target)[0, 0].detach().cpu().numpy()),
+                            "hybrid/sample_pred": wandb.Image(model.vae.decode(preview_pred)[0, 0].detach().cpu().numpy()),
                         },
                         step=global_step,
                     )

@@ -89,12 +89,13 @@ def evaluate_hybrid(
         history_pixel = pixel_sample["history"].unsqueeze(0).to(device)
         target = pixel_sample["target"][0].numpy()
 
-        pred_pixel = hybrid.sample(
-            history_pixel,
+        history_latent = vae.encode(history_pixel)
+        pred_latent = hybrid.sample(
+            history_latent,
             num_inference_steps=cfg["diffusion"]["inference"]["num_inference_steps"],
             guidance_scale=cfg["diffusion"]["inference"].get("guidance_scale", 1.0),
         )
-        pred_np = pred_pixel[0, 0].detach().cpu().numpy()
+        pred_np = vae.decode(pred_latent)[0, 0].detach().cpu().numpy()
 
         metrics = compute_all_metrics(pred_np, target, csi_thresholds=csi_thresholds)
         metrics_list.append(metrics)

@@ -193,11 +193,12 @@ def main() -> None:
             )
             pred_pixel = vae.decode(pred_latent)[0, 0].detach().cpu().numpy()
 
-            pred_hybrid = hybrid.sample(
-                history_pixel,
+            pred_hybrid_latent = hybrid.sample(
+                history_latent,
                 num_inference_steps=args.num_inference_steps,
                 guidance_scale=guidance_scale,
-            )[0, 0].detach().cpu().numpy()
+            )
+            pred_hybrid = vae.decode(pred_hybrid_latent)[0, 0].detach().cpu().numpy()
 
             pred_conv = convlstm(history_pixel)[0, 0].detach().cpu().numpy()
 
