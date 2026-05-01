@@ -7,7 +7,6 @@ import math
 import time
 
 import torch
-from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -51,6 +50,7 @@ def main() -> None:
     dataset = INSATSequenceDataset(
         data_dir=cfg["data"]["paths"]["processed"],
         num_history=cfg["diffusion"]["conditioning"]["num_history_frames"],
+        prefer_local_cache=False,
     )
     dataloader = DataLoader(
         dataset,
@@ -93,7 +93,7 @@ def main() -> None:
     final_epoch = start_epoch + run_epochs
 
     use_amp = t_cfg.get("mixed_precision", "fp16") == "fp16" and device.type == "cuda"
-    scaler = GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp) if device.type == "cuda" else None
 
     log.info("═══ Starting Hybrid ConvLSTM + Diffusion Training ═══")
     log.info(
@@ -135,17 +135,24 @@ def main() -> None:
             history = batch["history"].to(device, non_blocking=torch.cuda.is_available())
             target = batch["target"].to(device, non_blocking=torch.cuda.is_available())
 
-            with autocast(enabled=use_amp):
+            with torch.amp.autocast(device_type=device.type, enabled=use_amp):
                 losses = model.training_step(history, target)
                 loss = losses["loss"] / t_cfg["gradient_accumulation_steps"]
 
-            scaler.scale(loss).backward()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
             if step % t_cfg["gradient_accumulation_steps"] == 0:
-                scaler.unscale_(optimizer)
+                if scaler is not None:
+                    scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.diffusion.unet.parameters(), t_cfg["max_grad_norm"])
-                scaler.step(optimizer)
-                scaler.update()
+                if scaler is not None:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
                 optimizer.zero_grad()
                 scheduler.step()
                 model.diffusion.ema.update(model.diffusion.unet)

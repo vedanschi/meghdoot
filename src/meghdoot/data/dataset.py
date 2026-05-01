@@ -34,22 +34,25 @@ class INSATSequenceDataset(Dataset):
         data_dir: str | Path,
         num_history: int = 3,
         transform=None,
+        prefer_local_cache: bool = False,
         **kwargs  # Swallows legacy 'channel' args from older training scripts
     ) -> None:
         super().__init__()
         self.num_history = num_history
         self.transform = transform
         self.data_dir = Path(data_dir)
+        self.prefer_local_cache = prefer_local_cache
 
         # Resolve whichever tensor cache layout actually exists in the workspace.
         candidate_dirs = [
-            Path("/home/jupyter/local_data/stacked_tensors"),
             self.data_dir / "vae_tensors",
             self.data_dir / "stacked_tensors",
             self.data_dir,
             Path("/home/jupyter/meghdoot_data/processed/vae_tensors"),
             Path("/home/jupyter/meghdoot_data/processed"),
         ]
+        if self.prefer_local_cache:
+            candidate_dirs = [Path("/home/jupyter/local_data/stacked_tensors")] + candidate_dirs
         target_dir = next((path for path in candidate_dirs if path.exists()), self.data_dir)
         self.target_dir = target_dir
 
@@ -136,8 +139,6 @@ class LatentSequenceDataset(Dataset):
             Path("/home/jupyter/local_data/stacked_tensors"),
             self.latent_dir / "stacked_tensors",
             self.latent_dir,
-            Path("/home/jupyter/meghdoot_data/processed/vae_tensors"),
-            Path("/home/jupyter/meghdoot_data/processed"),
         ]
         self.latent_dir = next((path for path in candidate_dirs if path.exists()), self.latent_dir)
 
