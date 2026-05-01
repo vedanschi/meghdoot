@@ -175,6 +175,8 @@ diffusion:
     event_focus_threshold: 0.35    # latent magnitude threshold for event emphasis
     edge_loss_weight: 0.05         # morphology-preserving edge consistency in latent space
     contrast_loss_weight: 0.05     # match latent dynamic range to avoid gray collapse
+    extreme_value_loss_weight: 0.15  # explicitly penalize not matching bright/extreme pixels (targets gray collapse)
+    extreme_value_threshold: 0.5   # latent magnitude threshold for extreme regions (bright clouds, storms)
     save_every_n_epochs: 10       # save checkpoints every 10 epochs; epoch 100 is still saved explicitly
 
   # Inference

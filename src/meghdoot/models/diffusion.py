@@ -163,6 +163,10 @@ class MeghdootDiffusion:
         self.edge_loss_weight = train_cfg.get("edge_loss_weight", 0.0)
         # Contrast matching aligns per-channel latent standard deviation.
         self.contrast_loss_weight = train_cfg.get("contrast_loss_weight", 0.0)
+        # Extreme value loss: explicitly penalize not matching bright/high-magnitude pixels
+        # This prevents mean-regression and encourages capturing storms/clouds with white peaks.
+        self.extreme_value_loss_weight = train_cfg.get("extreme_value_loss_weight", 0.0)
+        self.extreme_value_threshold = train_cfg.get("extreme_value_threshold", 0.5)
 
         # Conditioning dropout for CFG-style training (prevents conditional neglect)
         cond_cfg = self.diff_cfg.get("conditioning", {})
@@ -370,6 +374,21 @@ class MeghdootDiffusion:
             contrast_loss = F.l1_loss(pred_std, tgt_std)
             contrast_loss = contrast_loss * physics_mask.mean()
 
+        # Extreme value loss: explicitly penalize missing bright/high-magnitude pixels.
+        # This directly targets the "gray/washed-out" problem by forcing the model to
+        # match extreme values (white clouds, storm peaks) instead of converging to smooth means.
+        extreme_value_loss = torch.tensor(0.0, device=self.device)
+        if self.extreme_value_loss_weight > 0:
+            # Create mask for high-magnitude regions in target
+            extreme_mask = (target_latent.abs() > self.extreme_value_threshold).float()
+            if extreme_mask.sum() > 0:
+                # Only penalize extreme regions where they exist in target
+                extreme_loss_val = (F.l1_loss(predicted_x0 * extreme_mask, target_latent * extreme_mask)
+                                    / extreme_mask.sum().clamp(min=1e-6))
+                extreme_value_loss = extreme_loss_val * physics_mask.mean()
+            else:
+                extreme_value_loss = torch.tensor(0.0, device=self.device)
+
         # Temporal consistency loss (optical-flow warping between last cond & prediction)
         temporal_loss = torch.tensor(0.0, device=self.device)
         if self.temporal_loss_enabled:
@@ -392,6 +411,7 @@ class MeghdootDiffusion:
             + self.x0_recon_weight * x0_recon_loss
             + self.edge_loss_weight * edge_loss
             + self.contrast_loss_weight * contrast_loss
+            + self.extreme_value_loss_weight * extreme_value_loss
             + (self.temporal_weight * temporal_loss if self.temporal_loss_enabled else 0.0)
         )
 
@@ -404,6 +424,7 @@ class MeghdootDiffusion:
             "x0_recon_loss": x0_recon_loss,
             "edge_loss": edge_loss,
             "contrast_loss": contrast_loss,
+            "extreme_value_loss": extreme_value_loss,
             "temporal_loss": temporal_loss,
         }
 
