@@ -140,8 +140,8 @@ class SatelliteVAE:
         self.vae_cfg = cfg["vae"]
         self.device = get_device(cfg["project"].get("device", "cuda"))
 
-        pretrained_ref = self.vae_cfg["pretrained"]
         base_pretrained = self.vae_cfg.get("base_pretrained", "stabilityai/sd-vae-ft-mse")
+        pretrained_ref = self.vae_cfg.get("pretrained", base_pretrained)
 
         # If pretrained is a checkpoint file, bootstrap architecture from base_pretrained
         from_pretrained_ref = base_pretrained if str(pretrained_ref).endswith(".pt") else pretrained_ref
