@@ -52,12 +52,13 @@ def main() -> None:
         num_history=cfg["diffusion"]["conditioning"]["num_history_frames"],
         cache_in_memory=True,
     )
+    num_workers = 0 if device.type == "cuda" else cfg["data"]["num_workers"]
     dataloader = DataLoader(
         dataset,
         batch_size=t_cfg["batch_size"],
         shuffle=True,
-        num_workers=cfg["data"]["num_workers"],
-        prefetch_factor=cfg["data"].get("prefetch_factor", 2) if cfg["data"]["num_workers"] > 0 else None,
+        num_workers=num_workers,
+        prefetch_factor=cfg["data"].get("prefetch_factor", 2) if num_workers > 0 else None,
         persistent_workers=False,
         pin_memory=torch.cuda.is_available(),
         drop_last=True,
@@ -69,6 +70,12 @@ def main() -> None:
         convlstm_ckpt=convlstm_ckpt,
         freeze_convlstm=cfg.get("hybrid", {}).get("freeze_convlstm", True),
     ).to(device)
+    
+    # Verify all components are on GPU
+    log.info(f"Model device: {model.device}")
+    log.info(f"VAE device: {next(model.vae.parameters()).device}")
+    log.info(f"Diffusion UNet device: {next(model.diffusion.unet.parameters()).device}")
+    log.info(f"ConvLSTM device: {next(model.convlstm.parameters()).device}")
 
     optimizer = torch.optim.AdamW(
         model.diffusion.unet.parameters(),
@@ -134,10 +141,18 @@ def main() -> None:
 
             history = batch["history"].to(device, non_blocking=torch.cuda.is_available())
             target = batch["target"].to(device, non_blocking=torch.cuda.is_available())
+            
+            # Debug: verify device placement on first batch
+            if step == 1:
+                log.debug(f"[Step 1] History device: {history.device}, Target device: {target.device}")
 
             with torch.amp.autocast(device_type=device.type, enabled=use_amp):
                 losses = model.training_step(history, target)
                 loss = losses["loss"] / t_cfg["gradient_accumulation_steps"]
+                
+                # Debug: verify loss is on GPU
+                if step == 1:
+                    log.debug(f"[Step 1] Loss device: {loss.device}")
 
             if scaler is not None:
                 scaler.scale(loss).backward()
