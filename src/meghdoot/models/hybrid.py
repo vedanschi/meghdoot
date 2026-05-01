@@ -127,7 +127,7 @@ class ConvLSTMDiffusionHybrid:
     @torch.no_grad()
     def predict_base(self, history_latents: torch.Tensor) -> torch.Tensor:
         history_latents = self._ensure_batch(history_latents).to(self.device)
-        return self.convlstm(history_latents)
+        return self.convlstm(history_latents).to(self.device)
 
     def training_step(
         self,
@@ -138,7 +138,7 @@ class ConvLSTMDiffusionHybrid:
         target_latent = target_latent.to(self.device)
 
         with torch.no_grad() if self.freeze_convlstm else torch.enable_grad():
-            base_latent = self.convlstm(history_latents)
+            base_latent = self.convlstm(history_latents).to(self.device)
 
         return self.diffusion.training_step(
             history_latents=history_latents,
@@ -154,7 +154,7 @@ class ConvLSTMDiffusionHybrid:
         guidance_scale: float | None = None,
     ) -> torch.Tensor:
         history_latents = self._ensure_batch(history_latents).to(self.device)
-        base_latent = self.convlstm(history_latents)
+        base_latent = self.convlstm(history_latents).to(self.device)
 
         pred_latent = self.diffusion.sample(
             history_latents=history_latents,

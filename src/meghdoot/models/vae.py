@@ -211,9 +211,12 @@ class SatelliteVAE:
         self.vae.train()
         return self
 
-    def to(self, device: torch.device) -> "SatelliteVAE":
-        self.vae.to(device)
-        self.device = device
+    def to(self, device: str | torch.device) -> "SatelliteVAE":
+        if isinstance(device, torch.device):
+            self.device = device
+        else:
+            self.device = get_device(device)
+        self.vae.to(self.device)
         return self
 
     # ── Fine-tune ──────────────────────────────────

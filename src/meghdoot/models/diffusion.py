@@ -250,6 +250,8 @@ class MeghdootDiffusion:
             history_latents = history_latents.to(self.device)
         if target_latent.device != self.device:
             target_latent = target_latent.to(self.device)
+        if base_latent is not None and base_latent.device != self.device:
+            base_latent = base_latent.to(self.device)
 
         # Flatten history: [B, 3, 4, 64, 64] → [B, 12, 64, 64]
         cond, reference_latent = self._prepare_conditioning(history_latents, base_latent)
