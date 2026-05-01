@@ -509,7 +509,10 @@ class MeghdootDiffusion:
 
         Returns self for chaining (e.g., `model.to(device)`).
         """
-        self.device = get_device(device)
+        if isinstance(device, torch.device):
+            self.device = device
+        else:
+            self.device = get_device(device)
         self.unet.to(self.device)
         try:
             self.mass_loss.to(self.device)
