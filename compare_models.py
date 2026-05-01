@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Compare Meghdoot diffusion against the ConvLSTM baseline.
 
-Loads the epoch-130 diffusion checkpoint, the fine-tuned VAE, and the
-ConvLSTM baseline checkpoint from GCS, then evaluates both models on the
-same matched samples and saves a few side-by-side panels.
+Loads the diffusion checkpoint, the fine-tuned VAE, and the ConvLSTM
+baseline checkpoint, then evaluates both models on the same preprocessed
+test sequences. Diffusion history is encoded with the VAE on the fly so
+the test split stays aligned end-to-end.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import numpy as np
 import torch
 from typing import cast
 
-from meghdoot.data.dataset import INSATSequenceDataset, LatentSequenceDataset
+from meghdoot.data.dataset import INSATSequenceDataset
 from meghdoot.evaluation.baselines import ConvLSTMPredictor
 from meghdoot.evaluation.metrics import compute_all_metrics
 from meghdoot.models.diffusion import MeghdootDiffusion
@@ -97,13 +98,14 @@ def main() -> None:
         default=None,
         help="Directory containing the processed test tensors (.pt files)",
     )
-    parser.add_argument(
-        "--latent-dir",
-        default=None,
-        help="Directory containing the cached VAE latents for the same test split",
-    )
     parser.add_argument("--n-samples", type=int, default=30)
     parser.add_argument("--num-inference-steps", type=int, default=100)
+    parser.add_argument(
+        "--guidance-scale",
+        type=float,
+        default=None,
+        help="Override diffusion guidance scale for sampling",
+    )
     parser.add_argument("--output-dir", default="results/model_compare")
     args = parser.parse_args()
 
@@ -121,16 +123,9 @@ def main() -> None:
     csi_thresholds = cfg.get("evaluation", {}).get("csi_thresholds", [600, 700, 800])
 
     processed_dir = Path(args.processed_dir or cfg["data"]["paths"]["processed"])
-    latent_dir = Path(args.latent_dir or cfg["data"]["paths"]["latents"])
     log.info(f"Using processed test data: {processed_dir}")
-    log.info(f"Using latent test data: {latent_dir}")
 
     pixel_dataset = INSATSequenceDataset(data_dir=processed_dir, num_history=past_len)
-    latent_dataset = LatentSequenceDataset(
-        latent_dir=latent_dir,
-        num_history=past_len,
-        cache_in_memory=True,
-    )
 
     vae = SatelliteVAE(cfg).to(device)
     vae.load(cfg["vae"]["pretrained"])
@@ -140,6 +135,13 @@ def main() -> None:
     diffusion.load(args.diffusion_ckpt)
     diffusion.eval()
     log.info(f"Loaded diffusion checkpoint: {args.diffusion_ckpt}")
+
+    guidance_scale = (
+        args.guidance_scale
+        if args.guidance_scale is not None
+        else cfg.get("diffusion", {}).get("inference", {}).get("guidance_scale", 1.0)
+    )
+    log.info(f"Using diffusion guidance scale: {guidance_scale}")
 
     convlstm_cfg = cfg["evaluation"]["baselines"]["convlstm"]
     convlstm = ConvLSTMPredictor(
@@ -154,23 +156,24 @@ def main() -> None:
     meghdoot_metrics: list[dict[str, float]] = []
     convlstm_metrics: list[dict[str, float]] = []
 
-    sample_count = min(args.n_samples, len(pixel_dataset), len(latent_dataset))
+    sample_count = min(args.n_samples, len(pixel_dataset))
     log.info(f"Evaluating {sample_count} matched samples")
 
     with torch.no_grad():
         for idx in range(sample_count):
             pixel_sample = pixel_dataset[idx]
-            latent_sample = latent_dataset[idx]
-
             target_tensor = cast(torch.Tensor, pixel_sample["target"])
             history_pixel_tensor = cast(torch.Tensor, pixel_sample["history"])
-            history_latent_tensor = cast(torch.Tensor, latent_sample["history"])
 
             target = target_tensor[0].cpu().numpy()
             history_pixel = history_pixel_tensor.to(device).unsqueeze(0)
-            history_latent = history_latent_tensor.to(device).unsqueeze(0)
+            history_latent = vae.encode(history_pixel_tensor.to(device)).unsqueeze(0)
 
-            pred_latent = diffusion.sample(history_latent, num_inference_steps=args.num_inference_steps)
+            pred_latent = diffusion.sample(
+                history_latent,
+                num_inference_steps=args.num_inference_steps,
+                guidance_scale=guidance_scale,
+            )
             pred_pixel = vae.decode(pred_latent)[0, 0].detach().cpu().numpy()
 
             pred_conv = convlstm(history_pixel)[0, 0].detach().cpu().numpy()
