@@ -80,12 +80,6 @@ class ConvLSTMDiffusionHybrid(nn.Module):
             hidden_dims=conv_cfg["hidden_dims"],
             kernel_size=conv_cfg["kernel_size"],
         ).to(self.device)
-        
-        # Manually move ConvLSTM parameters/buffers since it may not support .to() properly
-        for param in self.convlstm.parameters():
-            param.data = param.data.to(self.device)
-        for buf in self.convlstm.buffers():
-            buf.data = buf.data.to(self.device)
 
         if convlstm_ckpt is not None:
             load_checkpoint_any(self.convlstm, convlstm_ckpt, self.device)

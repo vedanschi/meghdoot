@@ -94,28 +94,36 @@ def main() -> None:
         freeze_convlstm=freeze_convlstm,
     ).to(device)
 
-    # Build optimizer: include all trainable parameters
-    # When ConvLSTM is frozen, its gradients are already disabled
-    opt_params = []
-    
-    # UNet parameters (always trainable)
-    opt_params.extend(list(model.diffusion.unet.parameters()))
-    
-    # ConvLSTM parameters (if unfrozen)
+    # Build optimizer params from explicitly named leaf Parameters.
+    # This prevents "can't optimize a non-leaf Tensor" errors from silent tensor moves.
+    named_opt_params: list[tuple[str, torch.nn.Parameter]] = []
+    named_opt_params.extend(
+        (f"diffusion.unet.{name}", p)
+        for name, p in model.diffusion.unet.named_parameters()
+        if p.requires_grad
+    )
     if not freeze_convlstm:
-        opt_params.extend(list(model.convlstm.parameters()))
-    
-    # Affine calibration parameters (if enabled)
+        named_opt_params.extend(
+            (f"convlstm.{name}", p)
+            for name, p in model.convlstm.named_parameters()
+            if p.requires_grad
+        )
     if model.use_affine_calibration and model.affine_scale is not None:
-        opt_params.append(model.affine_scale)
-        opt_params.append(model.affine_bias)
-    
+        named_opt_params.append(("hybrid.affine_scale", model.affine_scale))
+        named_opt_params.append(("hybrid.affine_bias", model.affine_bias))
+
+    non_leaf = [name for name, p in named_opt_params if not p.is_leaf]
+    if non_leaf:
+        bad = ", ".join(non_leaf)
+        raise RuntimeError(
+            "Optimizer received non-leaf parameters: "
+            f"{bad}. Ensure parameters are not reassigned via tensor .to() results."
+        )
+
+    opt_params = [p for _, p in named_opt_params]
+
     # Gradient clipping params for monitoring
-    clip_params = list(model.diffusion.unet.parameters())
-    if not freeze_convlstm:
-        clip_params.extend(list(model.convlstm.parameters()))
-    if model.use_affine_calibration and model.affine_scale is not None:
-        clip_params.extend([model.affine_scale, model.affine_bias])
+    clip_params = [p for p in opt_params if p.requires_grad]
     
     optimizer = torch.optim.AdamW(
         opt_params,

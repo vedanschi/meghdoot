@@ -191,7 +191,7 @@ diffusion:
 hybrid:
   enabled: false
   convlstm_ckpt: "checkpoints/baselines/convlstm.pt"
-  freeze_convlstm: false         # IMPORTANT: unfreeze to train ConvLSTM + Diffusion jointly
+  freeze_convlstm: true          # Stabilization: keep ConvLSTM fixed, train diffusion + affine calibrator
   use_affine_calibration: true   # Enable learnable affine on ConvLSTM output for amplitude correction
   checkpoint_dir: "checkpoints/hybrid"
   save_every_n_epochs: 5
