@@ -170,18 +170,18 @@ diffusion:
     max_grad_norm: 0.5
     latent_l1_weight: 0.0         # Option A: disable latent-space L1 regularization
     residual_prediction: true      # predict latent residual (x_t - x_{t-1}) instead of absolute latent
-    x0_recon_weight: 0.10          # slightly lower to avoid over-smoothing wispy detail
-    event_focus_weight: 1.0        # keep rare/high-intensity regions visible
-    event_focus_threshold: 0.30    # lower threshold to catch thinner cirrus-like structures
-    edge_loss_weight: 0.08         # sharpen fine cloud boundaries and storm-eye structure
-    contrast_loss_weight: 0.09     # restore dynamic range for wisps and cloud texture
-    extreme_value_loss_weight: 0.06  # a bit more peak pressure for storm cores / eye walls
+    x0_recon_weight: 0.08          # slightly weaker to avoid washing out rare-event structure
+    event_focus_weight: 1.20       # stronger emphasis on high-magnitude regions for CSI
+    event_focus_threshold: 0.28    # catch thinner cirrus bands and storm eyewalls earlier
+    edge_loss_weight: 0.05         # keep edges, but avoid over-regularizing into blur
+    contrast_loss_weight: 0.06     # enough to preserve texture without suppressing peaks
+    extreme_value_loss_weight: 0.09  # stronger pressure on misses at the highest intensities
     extreme_value_threshold: 0.5   # latent magnitude threshold for extreme regions (bright clouds, storms)
     save_every_n_epochs: 5         # save checkpoints more frequently for the final sweep
 
   # Inference
   inference:
-    num_inference_steps: 50
+    num_inference_steps: 60
     guidance_scale: 1.0           # 2.5 degraded skill in aligned eval; keep conditional path without over-guidance
     prediction_horizon_hours: 3
 
