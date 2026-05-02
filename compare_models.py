@@ -115,6 +115,12 @@ def main() -> None:
         help="Override diffusion guidance scale for sampling",
     )
     parser.add_argument("--output-dir", default="results/model_compare")
+    parser.add_argument(
+        "--hybrid-base",
+        choices=["convlstm", "history"],
+        default="convlstm",
+        help="When evaluating hybrid, use ConvLSTM forecast as base or use the last history frame as base",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -206,11 +212,21 @@ def main() -> None:
             )
             pred_pixel = vae.decode(pred_latent)[0, 0].detach().cpu().numpy()
 
-            pred_hybrid_latent = hybrid.sample(
-                history_latent,
-                num_inference_steps=args.num_inference_steps,
-                guidance_scale=guidance_scale,
-            )
+            # Hybrid sampling mode: allow swapping ConvLSTM base with last history frame
+            if args.hybrid_base == "convlstm":
+                pred_hybrid_latent = hybrid.sample(
+                    history_latent,
+                    num_inference_steps=args.num_inference_steps,
+                    guidance_scale=guidance_scale,
+                )
+            else:
+                # Use diffusion directly with reference set to last history frame
+                pred_hybrid_latent = hybrid.diffusion.sample(
+                    history_latent,
+                    num_inference_steps=args.num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    base_latent=None,
+                )
             pred_hybrid = vae.decode(pred_hybrid_latent)[0, 0].detach().cpu().numpy()
 
             pred_conv = convlstm(history_pixel)[0, 0].detach().cpu().numpy()
