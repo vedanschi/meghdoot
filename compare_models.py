@@ -148,10 +148,7 @@ def main() -> None:
         log.warning(f"No top-level .pt files in {processed_dir}; falling back to dataset discovery")
 
     vae = SatelliteVAE(cfg).to(device)
-    vae_pretrained = cfg["vae"].get("base_pretrained", "stabilityai/sd-vae-ft-mse")
-    if isinstance(vae_pretrained, str):
-        log.info(f"Loading VAE from: {vae_pretrained}")
-    vae.load(vae_pretrained)
+    # VAE is already loaded from config during __init__ (either HF model or checkpoint)
     vae.eval()
 
     diffusion = MeghdootDiffusion(cfg).to(device)
