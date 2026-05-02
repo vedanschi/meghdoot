@@ -162,7 +162,7 @@ diffusion:
     epochs: 150
     batch_size: 4
     gradient_accumulation_steps: 4
-    learning_rate: 1.0e-5
+    learning_rate: 5.0e-06
     lr_scheduler: "cosine"
     warmup_steps: 500
     ema_decay: 0.9999
@@ -170,14 +170,14 @@ diffusion:
     max_grad_norm: 0.5
     latent_l1_weight: 0.0         # Option A: disable latent-space L1 regularization
     residual_prediction: true      # predict latent residual (x_t - x_{t-1}) instead of absolute latent
-    x0_recon_weight: 0.08          # slightly reduced to avoid over-smoothing while preserving structure
-    event_focus_weight: 1.5        # up-weight high-magnitude latent regions (improves extremes)
+    x0_recon_weight: 0.10          # slightly increased to stabilise x0 reconstruction
+    event_focus_weight: 1.0        # up-weight high-magnitude latent regions (improves extremes)
     event_focus_threshold: 0.35    # latent magnitude threshold for event emphasis
     edge_loss_weight: 0.03         # lower edge pressure to protect amplitude/brightness gains
     contrast_loss_weight: 0.05     # match latent dynamic range to avoid gray collapse
-    extreme_value_loss_weight: 0.08  # moderate emphasis on bright/extreme pixels without destabilizing RMSE
+    extreme_value_loss_weight: 0.06  # moderate emphasis on bright/extreme pixels without destabilizing RMSE
     extreme_value_threshold: 0.5   # latent magnitude threshold for extreme regions (bright clouds, storms)
-    save_every_n_epochs: 10       # save checkpoints every 10 epochs; epoch 100 is still saved explicitly
+    save_every_n_epochs: 10        # save checkpoints more frequently for safer resumes
 
   # Inference
   inference:
