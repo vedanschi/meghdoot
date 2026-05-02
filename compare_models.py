@@ -133,14 +133,25 @@ def main() -> None:
     processed_dir = Path(args.processed_dir or cfg["data"]["paths"]["processed"])
     log.info(f"Using processed test data: {processed_dir}")
 
+    # Force use of top-level pixel test files, not training latents
+    top_level_files = list(processed_dir.glob("*.pt"))
     pixel_dataset = INSATSequenceDataset(
         data_dir=processed_dir,
         num_history=past_len,
         prefer_local_cache=False,
     )
+    if top_level_files:
+        pixel_dataset.target_dir = processed_dir
+        pixel_dataset.files = sorted(pixel_dataset.target_dir.glob("*.pt"))
+        log.info(f"Using top-level test files: {len(pixel_dataset.files)} sequences")
+    else:
+        log.warning(f"No top-level .pt files in {processed_dir}; falling back to dataset discovery")
 
     vae = SatelliteVAE(cfg).to(device)
-    vae.load(cfg["vae"]["pretrained"])
+    vae_pretrained = cfg["vae"].get("base_pretrained", "stabilityai/sd-vae-ft-mse")
+    if isinstance(vae_pretrained, str):
+        log.info(f"Loading VAE from: {vae_pretrained}")
+    vae.load(vae_pretrained)
     vae.eval()
 
     diffusion = MeghdootDiffusion(cfg).to(device)
