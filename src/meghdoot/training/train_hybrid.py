@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import itertools
 import math
 import re
 import time
@@ -96,12 +95,12 @@ def main() -> None:
     ).to(device)
 
     # Build optimizer params: include ConvLSTM if unfrozen, always include UNet, include affine if present
-    opt_params = [model.diffusion.unet.parameters()]
+    opt_params = list(model.diffusion.unet.parameters())
     if not freeze_convlstm:
-        opt_params.insert(0, model.convlstm.parameters())
+        opt_params.extend(model.convlstm.parameters())
     if model.use_affine_calibration:
-        opt_params.append([model.affine_scale, model.affine_bias])
-    all_params = itertools.chain(*opt_params)
+        opt_params.extend([model.affine_scale, model.affine_bias])
+    
     clip_params = list(model.diffusion.unet.parameters())
     if not freeze_convlstm:
         clip_params.extend(model.convlstm.parameters())
@@ -109,7 +108,7 @@ def main() -> None:
         clip_params.extend([model.affine_scale, model.affine_bias])
     
     optimizer = torch.optim.AdamW(
-        all_params,
+        opt_params,
         lr=t_cfg["learning_rate"],
         weight_decay=1e-4,
     )
