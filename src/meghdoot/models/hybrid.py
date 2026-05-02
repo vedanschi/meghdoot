@@ -55,7 +55,7 @@ def load_checkpoint_any(module: torch.nn.Module, ckpt_path: str | Path, device: 
         module.load_state_dict(filtered, strict=False)
 
 
-class ConvLSTMDiffusionHybrid:
+class ConvLSTMDiffusionHybrid(nn.Module):
     """ConvLSTM motion prior followed by DDPM refinement in latent space."""
 
     def __init__(
@@ -64,6 +64,8 @@ class ConvLSTMDiffusionHybrid:
         convlstm_ckpt: str | Path | None = None,
         freeze_convlstm: bool = True,
     ) -> None:
+        super().__init__()
+        super().__init__()
         self.cfg = cfg
         self.device = get_device(cfg["project"].get("device", "cuda"))
         self.freeze_convlstm = freeze_convlstm
@@ -98,31 +100,29 @@ class ConvLSTMDiffusionHybrid:
         self.use_affine_calibration = cfg.get("hybrid", {}).get("use_affine_calibration", False)
         if self.use_affine_calibration:
             # Per-channel scale and bias (4 latent channels)
-            self.affine_scale = nn.Parameter(torch.full((4,), 4.75, dtype=torch.float32))
-            self.affine_bias = nn.Parameter(torch.full((4,), 1.033, dtype=torch.float32))
+            # Create on CPU first, then move to device with module.to()
+            self.register_parameter("affine_scale", nn.Parameter(torch.full((4,), 4.75, dtype=torch.float32)))
+            self.register_parameter("affine_bias", nn.Parameter(torch.full((4,), 1.033, dtype=torch.float32)))
             log.info("ConvLSTM affine calibration enabled: scale=4.75, bias=1.033")
-            self.affine_scale.to(self.device)
-            self.affine_bias.to(self.device)
+        else:
+            self.register_parameter("affine_scale", None)
+            self.register_parameter("affine_bias", None)
 
     def to(self, device: str | torch.device):
+        """Move model to device. Handles string device names."""
         if isinstance(device, torch.device):
             self.device = device
         else:
             self.device = get_device(device)
+        
+        # Call parent to() to move all registered parameters/buffers
+        super().to(self.device)
+        
+        # Also explicitly move child modules
         self.vae.to(self.device)
         self.diffusion.to(self.device)
         self.convlstm.to(self.device)
         
-        # Manually move ConvLSTM parameters/buffers since it may not support .to() properly
-        for param in self.convlstm.parameters():
-            param.data = param.data.to(self.device)
-        for buf in self.convlstm.buffers():
-            buf.data = buf.data.to(self.device)
-        
-        # Move affine parameters
-        if self.use_affine_calibration:
-            self.affine_scale = self.affine_scale.to(self.device)
-            self.affine_bias = self.affine_bias.to(self.device)
         return self
 
     def train(self, mode: bool = True):

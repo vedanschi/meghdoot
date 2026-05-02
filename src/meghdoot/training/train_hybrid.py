@@ -94,17 +94,27 @@ def main() -> None:
         freeze_convlstm=freeze_convlstm,
     ).to(device)
 
-    # Build optimizer params: include ConvLSTM if unfrozen, always include UNet, include affine if present
-    opt_params = list(model.diffusion.unet.parameters())
-    if not freeze_convlstm:
-        opt_params.extend(model.convlstm.parameters())
-    if model.use_affine_calibration:
-        opt_params.extend([model.affine_scale, model.affine_bias])
+    # Build optimizer: include all trainable parameters
+    # When ConvLSTM is frozen, its gradients are already disabled
+    opt_params = []
     
+    # UNet parameters (always trainable)
+    opt_params.extend(list(model.diffusion.unet.parameters()))
+    
+    # ConvLSTM parameters (if unfrozen)
+    if not freeze_convlstm:
+        opt_params.extend(list(model.convlstm.parameters()))
+    
+    # Affine calibration parameters (if enabled)
+    if model.use_affine_calibration and model.affine_scale is not None:
+        opt_params.append(model.affine_scale)
+        opt_params.append(model.affine_bias)
+    
+    # Gradient clipping params for monitoring
     clip_params = list(model.diffusion.unet.parameters())
     if not freeze_convlstm:
-        clip_params.extend(model.convlstm.parameters())
-    if model.use_affine_calibration:
+        clip_params.extend(list(model.convlstm.parameters()))
+    if model.use_affine_calibration and model.affine_scale is not None:
         clip_params.extend([model.affine_scale, model.affine_bias])
     
     optimizer = torch.optim.AdamW(
