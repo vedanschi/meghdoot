@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import math
 import re
 import time
@@ -87,14 +88,21 @@ def main() -> None:
     )
 
     convlstm_ckpt = args.convlstm_ckpt or cfg.get("hybrid", {}).get("convlstm_ckpt")
+    freeze_convlstm = cfg.get("hybrid", {}).get("freeze_convlstm", True)
     model = ConvLSTMDiffusionHybrid(
         cfg,
         convlstm_ckpt=convlstm_ckpt,
-        freeze_convlstm=cfg.get("hybrid", {}).get("freeze_convlstm", True),
+        freeze_convlstm=freeze_convlstm,
     ).to(device)
 
+    # Build optimizer params: include ConvLSTM if unfrozen, always include UNet
+    opt_params = [model.diffusion.unet.parameters()]
+    if not freeze_convlstm:
+        opt_params.insert(0, model.convlstm.parameters())
+    all_params = itertools.chain(*opt_params)
+    
     optimizer = torch.optim.AdamW(
-        model.diffusion.unet.parameters(),
+        all_params,
         lr=t_cfg["learning_rate"],
         weight_decay=1e-4,
     )
@@ -132,7 +140,8 @@ def main() -> None:
     for epoch in range(start_epoch + 1, final_epoch + 1):
         run_epoch = epoch - start_epoch
         model.diffusion.unet.train()
-        model.convlstm.eval()
+        # Train ConvLSTM only if unfrozen; otherwise keep in eval mode
+        model.convlstm.train(mode=not freeze_convlstm)
 
         epoch_loss = 0.0
         epoch_mse = 0.0
