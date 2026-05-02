@@ -121,6 +121,12 @@ def main() -> None:
         default="convlstm",
         help="When evaluating hybrid, use ConvLSTM forecast as base or use the last history frame as base",
     )
+    parser.add_argument(
+        "--conv-scale",
+        type=float,
+        default=1.0,
+        help="Scale factor for ConvLSTM base latent (diagnostic: use ~40 to test amplitude calibration)",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -214,10 +220,17 @@ def main() -> None:
 
             # Hybrid sampling mode: allow swapping ConvLSTM base with last history frame
             if args.hybrid_base == "convlstm":
-                pred_hybrid_latent = hybrid.sample(
+                # Get ConvLSTM base and optionally scale it (diagnostic for amplitude calibration)
+                with torch.no_grad():
+                    conv_base = hybrid.predict_base(history_latent)
+                    if args.conv_scale != 1.0:
+                        conv_base = conv_base * args.conv_scale
+                
+                pred_hybrid_latent = hybrid.diffusion.sample(
                     history_latent,
                     num_inference_steps=args.num_inference_steps,
                     guidance_scale=guidance_scale,
+                    base_latent=conv_base,
                 )
             else:
                 # Use diffusion directly with reference set to last history frame
