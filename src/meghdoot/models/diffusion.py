@@ -517,9 +517,19 @@ class MeghdootDiffusion:
             self.ema.shadow = ckpt["ema"]
             
         if optimizer is not None and "optimizer" in ckpt:
-            optimizer.load_state_dict(ckpt["optimizer"])
+            try:
+                optimizer.load_state_dict(ckpt["optimizer"])
+            except ValueError as exc:
+                log.warning(
+                    "Skipping optimizer state load due to parameter-group mismatch: %s", exc
+                )
         if lr_scheduler is not None and "lr_scheduler" in ckpt:
-            lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
+            try:
+                lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
+            except Exception as exc:
+                log.warning(
+                    "Skipping LR scheduler state load due to incompatibility: %s", exc
+                )
             
         log.info(f"Loaded diffusion checkpoint (epoch {ckpt['epoch']})")
         return ckpt["epoch"]
