@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 
 from meghdoot.evaluation.baselines import ConvLSTMPredictor
 from meghdoot.models.diffusion import MeghdootDiffusion
@@ -91,6 +92,17 @@ class ConvLSTMDiffusionHybrid:
         if self.freeze_convlstm:
             for parameter in self.convlstm.parameters():
                 parameter.requires_grad = False
+        
+        # Optional: learnable affine calibration on ConvLSTM output
+        # Initialized from dataset stats (scale≈4.75, bias≈1.033) to correct amplitude attenuation
+        self.use_affine_calibration = cfg.get("hybrid", {}).get("use_affine_calibration", False)
+        if self.use_affine_calibration:
+            # Per-channel scale and bias (4 latent channels)
+            self.affine_scale = nn.Parameter(torch.full((4,), 4.75, dtype=torch.float32))
+            self.affine_bias = nn.Parameter(torch.full((4,), 1.033, dtype=torch.float32))
+            log.info("ConvLSTM affine calibration enabled: scale=4.75, bias=1.033")
+            self.affine_scale.to(self.device)
+            self.affine_bias.to(self.device)
 
     def to(self, device: str | torch.device):
         if isinstance(device, torch.device):
@@ -106,6 +118,11 @@ class ConvLSTMDiffusionHybrid:
             param.data = param.data.to(self.device)
         for buf in self.convlstm.buffers():
             buf.data = buf.data.to(self.device)
+        
+        # Move affine parameters
+        if self.use_affine_calibration:
+            self.affine_scale = self.affine_scale.to(self.device)
+            self.affine_bias = self.affine_bias.to(self.device)
         return self
 
     def train(self, mode: bool = True):
@@ -139,6 +156,12 @@ class ConvLSTMDiffusionHybrid:
 
         with torch.no_grad() if self.freeze_convlstm else torch.enable_grad():
             base_latent = self.convlstm(history_latents).to(self.device)
+        
+        # Apply learnable affine calibration if enabled
+        if self.use_affine_calibration:
+            scale = self.affine_scale.view(1, -1, 1, 1)
+            bias = self.affine_bias.view(1, -1, 1, 1)
+            base_latent = scale * base_latent + bias
 
         return self.diffusion.training_step(
             history_latents=history_latents,
@@ -155,6 +178,12 @@ class ConvLSTMDiffusionHybrid:
     ) -> torch.Tensor:
         history_latents = self._ensure_batch(history_latents).to(self.device)
         base_latent = self.convlstm(history_latents).to(self.device)
+        
+        # Apply learnable affine calibration if enabled
+        if self.use_affine_calibration:
+            scale = self.affine_scale.view(1, -1, 1, 1)
+            bias = self.affine_bias.view(1, -1, 1, 1)
+            base_latent = scale * base_latent + bias
 
         pred_latent = self.diffusion.sample(
             history_latents=history_latents,
