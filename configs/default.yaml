@@ -170,14 +170,14 @@ diffusion:
     max_grad_norm: 0.5
     latent_l1_weight: 0.0         # Option A: disable latent-space L1 regularization
     residual_prediction: true      # predict latent residual (x_t - x_{t-1}) instead of absolute latent
-    x0_recon_weight: 0.12          # increased to favor pixel-level fidelity (SSIM/PSNR)
-    event_focus_weight: 1.0        # up-weight high-magnitude latent regions (improves extremes)
-    event_focus_threshold: 0.35    # latent magnitude threshold for event emphasis
-    edge_loss_weight: 0.05         # enhanced to sharpen edges and fine details
-    contrast_loss_weight: 0.07     # increased to enhance per-channel dynamic range and pop
-    extreme_value_loss_weight: 0.05  # reduced to avoid over-aggressive peak-chasing; CSI still strong
+    x0_recon_weight: 0.10          # slightly lower to avoid over-smoothing wispy detail
+    event_focus_weight: 1.0        # keep rare/high-intensity regions visible
+    event_focus_threshold: 0.30    # lower threshold to catch thinner cirrus-like structures
+    edge_loss_weight: 0.08         # sharpen fine cloud boundaries and storm-eye structure
+    contrast_loss_weight: 0.09     # restore dynamic range for wisps and cloud texture
+    extreme_value_loss_weight: 0.06  # a bit more peak pressure for storm cores / eye walls
     extreme_value_threshold: 0.5   # latent magnitude threshold for extreme regions (bright clouds, storms)
-    save_every_n_epochs: 10        # save checkpoints more frequently for safer resumes
+    save_every_n_epochs: 5         # save checkpoints more frequently for the final sweep
 
   # Inference
   inference:
@@ -191,8 +191,8 @@ diffusion:
 hybrid:
   enabled: false
   convlstm_ckpt: "checkpoints/baselines/convlstm.pt"
-  freeze_convlstm: true          # Stabilization: keep ConvLSTM fixed, train diffusion + affine calibrator
-  use_affine_calibration: true   # Enable learnable affine on ConvLSTM output for amplitude correction
+  freeze_convlstm: true          # diffusion-only final run; keep hybrid out of the picture
+  use_affine_calibration: false   # disabled for diffusion-only evaluation/training
   checkpoint_dir: "checkpoints/hybrid"
   save_every_n_epochs: 5
   keep_last_checkpoints: 0        # disable pruning; keep all checkpoints

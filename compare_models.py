@@ -23,7 +23,6 @@ from typing import cast
 from meghdoot.data.dataset import INSATSequenceDataset
 from meghdoot.evaluation.baselines import ConvLSTMPredictor
 from meghdoot.evaluation.metrics import compute_all_metrics
-from meghdoot.models.hybrid import ConvLSTMDiffusionHybrid
 from meghdoot.models.diffusion import MeghdootDiffusion
 from meghdoot.models.vae import SatelliteVAE
 from meghdoot.utils.config import load_config
@@ -74,12 +73,11 @@ def save_panels(
     out_dir: Path,
     target: np.ndarray,
     diffusion: np.ndarray,
-    hybrid: np.ndarray,
     convlstm: np.ndarray,
     idx: int,
 ) -> None:
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-    panels = [("Target", target), ("Diffusion", diffusion), ("Hybrid", hybrid), ("ConvLSTM", convlstm)]
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    panels = [("Target", target), ("Diffusion", diffusion), ("ConvLSTM", convlstm)]
 
     for ax, (title, image) in zip(axes, panels):
         ax.imshow(image, cmap="gray", vmin=-1, vmax=1)
@@ -115,18 +113,6 @@ def main() -> None:
         help="Override diffusion guidance scale for sampling",
     )
     parser.add_argument("--output-dir", default="results/model_compare")
-    parser.add_argument(
-        "--hybrid-base",
-        choices=["convlstm", "history"],
-        default="convlstm",
-        help="When evaluating hybrid, use ConvLSTM forecast as base or use the last history frame as base",
-    )
-    parser.add_argument(
-        "--conv-scale",
-        type=float,
-        default=1.0,
-        help="Scale factor for ConvLSTM base latent (diagnostic: use ~40 to test amplitude calibration)",
-    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -168,15 +154,6 @@ def main() -> None:
     diffusion.eval()
     log.info(f"Loaded diffusion checkpoint: {args.diffusion_ckpt}")
 
-    hybrid = ConvLSTMDiffusionHybrid(
-        cfg,
-        convlstm_ckpt=convlstm_ckpt,
-        freeze_convlstm=cfg.get("hybrid", {}).get("freeze_convlstm", True),
-    ).to(device)
-    hybrid.diffusion.load(args.diffusion_ckpt)
-    hybrid.eval()
-    log.info(f"Loaded hybrid ConvLSTM + diffusion refiner from: {args.diffusion_ckpt}")
-
     guidance_scale = (
         args.guidance_scale
         if args.guidance_scale is not None
@@ -195,7 +172,6 @@ def main() -> None:
     log.info(f"Loaded ConvLSTM checkpoint: {convlstm_ckpt}")
 
     meghdoot_metrics: list[dict[str, float]] = []
-    hybrid_metrics: list[dict[str, float]] = []
     convlstm_metrics: list[dict[str, float]] = []
 
     sample_count = min(args.n_samples, len(pixel_dataset))
@@ -218,54 +194,26 @@ def main() -> None:
             )
             pred_pixel = vae.decode(pred_latent)[0, 0].detach().cpu().numpy()
 
-            # Hybrid sampling mode: allow swapping ConvLSTM base with last history frame
-            if args.hybrid_base == "convlstm":
-                # Get ConvLSTM base and optionally scale it (diagnostic for amplitude calibration)
-                with torch.no_grad():
-                    conv_base = hybrid.predict_base(history_latent)
-                    if args.conv_scale != 1.0:
-                        conv_base = conv_base * args.conv_scale
-                
-                pred_hybrid_latent = hybrid.diffusion.sample(
-                    history_latent,
-                    num_inference_steps=args.num_inference_steps,
-                    guidance_scale=guidance_scale,
-                    base_latent=conv_base,
-                )
-            else:
-                # Use diffusion directly with reference set to last history frame
-                pred_hybrid_latent = hybrid.diffusion.sample(
-                    history_latent,
-                    num_inference_steps=args.num_inference_steps,
-                    guidance_scale=guidance_scale,
-                    base_latent=None,
-                )
-            pred_hybrid = vae.decode(pred_hybrid_latent)[0, 0].detach().cpu().numpy()
-
             pred_conv = convlstm(history_pixel)[0, 0].detach().cpu().numpy()
 
             m_metrics = compute_all_metrics(pred_pixel, target, csi_thresholds=csi_thresholds)
-            h_metrics = compute_all_metrics(pred_hybrid, target, csi_thresholds=csi_thresholds)
             c_metrics = compute_all_metrics(pred_conv, target, csi_thresholds=csi_thresholds)
 
             meghdoot_metrics.append(m_metrics)
-            hybrid_metrics.append(h_metrics)
             convlstm_metrics.append(c_metrics)
 
             if idx < 5:
-                save_panels(out_dir, target, pred_pixel, pred_hybrid, pred_conv, idx)
+                save_panels(out_dir, target, pred_pixel, pred_conv, idx)
 
             log.info(
                 f"[{idx + 1:03d}/{sample_count:03d}] "
                 f"Diffusion SSIM={m_metrics['ssim']:.4f} RMSE={m_metrics['rmse']:.4f} PSNR={m_metrics['psnr']:.2f} | "
-                f"Hybrid SSIM={h_metrics['ssim']:.4f} RMSE={h_metrics['rmse']:.4f} PSNR={h_metrics['psnr']:.2f} | "
                 f"ConvLSTM SSIM={c_metrics['ssim']:.4f} RMSE={c_metrics['rmse']:.4f} PSNR={c_metrics['psnr']:.2f}"
             )
 
-    summary = {"diffusion": {}, "hybrid": {}, "convlstm": {}}
+    summary = {"diffusion": {}, "convlstm": {}}
     for key in meghdoot_metrics[0].keys():
         summary["diffusion"][key] = float(np.mean([m[key] for m in meghdoot_metrics]))
-        summary["hybrid"][key] = float(np.mean([m[key] for m in hybrid_metrics]))
         summary["convlstm"][key] = float(np.mean([m[key] for m in convlstm_metrics]))
 
     with open(out_dir / "metrics.json", "w") as f:
@@ -277,34 +225,35 @@ def main() -> None:
     print(f"{'Metric':<16} {'Meghdoot':<16} {'ConvLSTM':<16} {'Winner'}")
     print("-" * 78)
 
-    hybrid_wins = 0
     convlstm_wins = 0
+    metric_total = 0
 
     for metric_name in ["ssim", "rmse", "psnr", "csi_600", "csi_700", "csi_800"]:
-        if metric_name not in summary["hybrid"]:
+        if metric_name not in summary["diffusion"]:
             continue
 
-        h_val = summary["hybrid"][metric_name]
+        metric_total += 1
+
+        m_val = summary["diffusion"][metric_name]
         c_val = summary["convlstm"][metric_name]
         higher_is_better = metric_name != "rmse"
 
         if higher_is_better:
-            winner = "Hybrid" if h_val > c_val else "ConvLSTM"
+            winner = "Meghdoot" if m_val > c_val else "ConvLSTM"
         else:
-            winner = "Hybrid" if h_val < c_val else "ConvLSTM"
+            winner = "Meghdoot" if m_val < c_val else "ConvLSTM"
 
-        if winner == "Hybrid":
-            hybrid_wins += 1
-        else:
+        if winner == "ConvLSTM":
             convlstm_wins += 1
 
-        print(f"{metric_name:<16} {h_val:<16.4f} {c_val:<16.4f} {winner}")
+        print(f"{metric_name:<16} {m_val:<16.4f} {c_val:<16.4f} {winner}")
 
     print("-" * 78)
-    print(f"Overall: Hybrid {hybrid_wins}  |  ConvLSTM {convlstm_wins}")
-    if hybrid_wins > convlstm_wins:
-        print("Result: Hybrid is better on the numeric metrics.")
-    elif hybrid_wins < convlstm_wins:
+    meghdoot_wins = metric_total - convlstm_wins
+    print(f"Overall: Meghdoot {meghdoot_wins}  |  ConvLSTM {convlstm_wins}")
+    if meghdoot_wins > convlstm_wins:
+        print("Result: Meghdoot is better on the numeric metrics.")
+    elif meghdoot_wins < convlstm_wins:
         print("Result: ConvLSTM is better on the numeric metrics.")
     else:
         print("Result: Tie on the numeric metrics.")

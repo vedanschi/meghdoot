@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Quick evaluation script: compute RMSE/SSIM/PSNR (and CSI thresholds) for
-diffusion-only, hybrid (ConvLSTM+Diffusion) and ConvLSTM baseline.
+diffusion-only and the ConvLSTM baseline.
 
 Usage:
   python scripts/eval_metrics.py --config configs/default.yaml --diffusion checkpoints/diffusion/diffusion_epoch5.pt --convlstm checkpoints/baselines/convlstm.pt --processed-dir /home/jupyter/local_data --n-samples 100
@@ -17,7 +17,6 @@ from meghdoot.evaluation.baselines import ConvLSTMPredictor
 from meghdoot.evaluation.metrics import compute_all_metrics
 from meghdoot.models.vae import SatelliteVAE
 from meghdoot.models.diffusion import MeghdootDiffusion
-from meghdoot.models.hybrid import ConvLSTMDiffusionHybrid
 from meghdoot.utils.config import load_config
 from meghdoot.utils.helpers import get_device
 from meghdoot.utils.logging import get_logger
@@ -78,16 +77,12 @@ def main():
         log.warning("Could not load ConvLSTM weights fully; continuing with partial weights.")
     convlstm.eval()
 
-    hybrid = ConvLSTMDiffusionHybrid(cfg, convlstm_ckpt=args.convlstm, freeze_convlstm=True).to(device)
-    hybrid.eval()
-
     expected_in = vae.vae.encoder.conv_in.in_channels
 
     n = min(args.n_samples, len(dataset))
     log.info(f"Evaluating {n} samples from {dataset.target_dir}")
 
     metrics_diff = []
-    metrics_hybrid = []
     metrics_conv = []
 
     with torch.no_grad():
@@ -110,10 +105,6 @@ def main():
             pred_latent = diffusion.sample(history_latent, num_inference_steps=50, guidance_scale=1.0)
             pred_pixel = vae.decode(pred_latent)[0, 0].cpu().numpy()
 
-            # Hybrid sample
-            pred_hybrid_latent = hybrid.sample(history_latent)
-            pred_hybrid_pixel = vae.decode(pred_hybrid_latent)[0, 0].cpu().numpy()
-
             # ConvLSTM baseline: predict base latent then decode
             base = convlstm(history_latent)
             base_pixel = vae.decode(base)[0, 0].cpu().numpy()
@@ -121,7 +112,6 @@ def main():
             tgt = target[0].cpu().numpy()
 
             metrics_diff.append(compute_all_metrics(pred_pixel, tgt, csi_thresholds=cfg.get("evaluation", {}).get("csi_thresholds", None)))
-            metrics_hybrid.append(compute_all_metrics(pred_hybrid_pixel, tgt, csi_thresholds=cfg.get("evaluation", {}).get("csi_thresholds", None)))
             metrics_conv.append(compute_all_metrics(base_pixel, tgt, csi_thresholds=cfg.get("evaluation", {}).get("csi_thresholds", None)))
 
     def avg(list_of_dicts):
@@ -130,7 +120,6 @@ def main():
         return out
 
     print("Diffusion-only metrics:", avg(metrics_diff))
-    print("Hybrid metrics:", avg(metrics_hybrid))
     print("ConvLSTM metrics:", avg(metrics_conv))
 
 
