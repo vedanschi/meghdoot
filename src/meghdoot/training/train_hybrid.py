@@ -100,6 +100,9 @@ def main() -> None:
     if not freeze_convlstm:
         opt_params.insert(0, model.convlstm.parameters())
     all_params = itertools.chain(*opt_params)
+    clip_params = list(model.diffusion.unet.parameters())
+    if not freeze_convlstm:
+        clip_params.extend(model.convlstm.parameters())
     
     optimizer = torch.optim.AdamW(
         all_params,
@@ -182,7 +185,7 @@ def main() -> None:
             if step % t_cfg["gradient_accumulation_steps"] == 0:
                 if scaler is not None:
                     scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.diffusion.unet.parameters(), t_cfg["max_grad_norm"])
+                torch.nn.utils.clip_grad_norm_(clip_params, t_cfg["max_grad_norm"])
                 if scaler is not None:
                     scaler.step(optimizer)
                     scaler.update()

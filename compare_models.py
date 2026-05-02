@@ -153,8 +153,9 @@ def main() -> None:
         convlstm_ckpt=convlstm_ckpt,
         freeze_convlstm=cfg.get("hybrid", {}).get("freeze_convlstm", True),
     ).to(device)
+    hybrid.diffusion.load(args.diffusion_ckpt)
     hybrid.eval()
-    log.info("Loaded hybrid ConvLSTM + diffusion refiner")
+    log.info(f"Loaded hybrid ConvLSTM + diffusion refiner from: {args.diffusion_ckpt}")
 
     guidance_scale = (
         args.guidance_scale
