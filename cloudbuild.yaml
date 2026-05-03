@@ -1,0 +1,10 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'asia-south2-docker.pkg.dev/meghdoot-ai/meghdoot/megdhoot-backend:$SHORT_SHA', '.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'asia-south2-docker.pkg.dev/meghdoot-ai/meghdoot/megdhoot-backend:$SHORT_SHA', 'asia-south2-docker.pkg.dev/meghdoot-ai/meghdoot/megdhoot-backend:latest']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-south2-docker.pkg.dev/meghdoot-ai/meghdoot/megdhoot-backend:latest']
+images:
+  - 'asia-south2-docker.pkg.dev/meghdoot-ai/meghdoot/megdhoot-backend:$SHORT_SHA'
+timeout: '3600s'
