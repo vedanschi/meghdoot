@@ -19,6 +19,12 @@ env/
 *.swp
 *.swo
 
+# Frontend
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/.vercel/
+
 # Data
 data/raw/**/*.hdf5
 data/raw/**/*.h5
@@ -56,4 +62,7 @@ Thumbs.db
 
 # Secrets
 .env
+.env.backend
+.env.local
+.env.production.local
 *.key
