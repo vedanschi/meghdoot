@@ -2,14 +2,14 @@
 FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3-pip python3.11-dev \
+    python3.11 python3.11-venv python3-pip python3.11-dev \
   gdal-bin libgdal-dev libhdf5-dev libnetcdf-dev \
     gcc g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY pyproject.toml .
 # Install everything into a virtual environment
-RUN python3 -m venv /opt/venv
+RUN python3.11 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir .
 
