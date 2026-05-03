@@ -40,8 +40,18 @@ fi
 : "${SERVICE_NAME:?SERVICE_NAME is required}"
 : "${REGION:?REGION is required}"
 : "${SERVICE_ACCOUNT:?SERVICE_ACCOUNT is required}"
-: "${CHECKPOINT_GCS_URI:?CHECKPOINT_GCS_URI is required}"
-: "${GCS_BUCKET:?GCS_BUCKET is required}"
+
+CHECKPOINT_GCS_URI="${CHECKPOINT_GCS_URI:-${MEGHDOOT_DIFFUSION_CHECKPOINT_GCS_URI:-}}"
+if [[ -z "${CHECKPOINT_GCS_URI}" ]]; then
+  echo "CHECKPOINT_GCS_URI or MEGHDOOT_DIFFUSION_CHECKPOINT_GCS_URI must be set"
+  exit 1
+fi
+
+GCS_BUCKET="${GCS_BUCKET:-${MEGHDOOT_GCS_BUCKET:-}}"
+if [[ -z "${GCS_BUCKET}" ]]; then
+  echo "GCS_BUCKET or MEGHDOOT_GCS_BUCKET must be set"
+  exit 1
+fi
 
 VAE_CHECKPOINT_GCS_URI="${VAE_CHECKPOINT_GCS_URI:-${MEGHDOOT_VAE_CHECKPOINT_GCS_URI:-}}"
 if [[ -z "${VAE_CHECKPOINT_GCS_URI}" ]]; then
@@ -52,6 +62,12 @@ fi
 IMAGE_NAME="${IMAGE_NAME:-meghdoot-backend}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/meghdoot/${IMAGE_NAME}:${IMAGE_TAG}"
+BACKEND_ALLOW_UNAUTHENTICATED="${BACKEND_ALLOW_UNAUTHENTICATED:-0}"
+
+AUTH_FLAG="--no-allow-unauthenticated"
+if [[ "${BACKEND_ALLOW_UNAUTHENTICATED}" == "1" ]]; then
+  AUTH_FLAG="--allow-unauthenticated"
+fi
 
 # Build and push the container image.
 echo "Building container image: ${IMAGE_URI}"
@@ -73,6 +89,7 @@ echo "Deploying Cloud Run service: ${SERVICE_NAME}"
 gcloud run deploy "${SERVICE_NAME}" \
   --image "${IMAGE_URI}" \
   --region "${REGION}" \
+  ${AUTH_FLAG} \
   --execution-environment gen2 \
   --gpu 1 \
   --gpu-type nvidia-l4 \

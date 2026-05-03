@@ -7,9 +7,9 @@
   },
 
   "search_parameters": {
-    "datasetId": "3RIMG_L1B_STD",
-    "startTime": "2024-06-01",
-    "endTime": "2024-08-31",
+    "datasetId": "3SIMG_L1C_SGP",
+    "startTime": "2026-05-01",
+    "endTime": "2026-05-04",
     "count": "",
     "boundingBox": "66.0,6.0,100.0,38.0",
     "gId": ""

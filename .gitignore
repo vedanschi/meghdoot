@@ -63,6 +63,7 @@ Thumbs.db
 # Secrets
 .env
 .env.backend
+.env.gcp
 .env.local
 .env.production.local
 *.key
