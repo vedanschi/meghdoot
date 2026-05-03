@@ -37,6 +37,12 @@ from meghdoot.models.vae import SatelliteVAE
 from meghdoot.utils.config import load_config
 from meghdoot.utils.helpers import ensure_dir, get_device
 from meghdoot.utils.logging import get_logger
+from meghdoot.deploy.runtime import (
+    ensure_diffusion_checkpoint,
+    ensure_vae_checkpoint,
+    load_backend_environment,
+    prepare_backend_config,
+)
 
 log = get_logger(__name__)
 
@@ -364,7 +370,8 @@ def main() -> int:
     parser.add_argument("--num-steps", type=int, default=6, help="Forecast steps (6 = 3 hours)")
     args = parser.parse_args()
     
-    cfg = load_config(args.config)
+    load_backend_environment()
+    cfg = prepare_backend_config(load_config(args.config))
     device = get_device(cfg["project"].get("device", "cuda"))
     
     log.info("="*80)
@@ -389,15 +396,16 @@ def main() -> int:
     try:
         log.info("Loading VAE and Diffusion models...")
         vae = SatelliteVAE(cfg).to(device).eval()
+        vae_ckpt_path = ensure_vae_checkpoint(cfg)
+        if vae_ckpt_path is not None:
+            vae.load(vae_ckpt_path)
+            log.info(f"Loaded VAE checkpoint: {vae_ckpt_path.name}")
+
         diffusion = MeghdootDiffusion(cfg).to(device).eval()
-        
-        # Load latest checkpoint
-        ckpt_dir = Path(cfg["diffusion"]["checkpoint_dir"])
-        if ckpt_dir.exists():
-            ckpts = sorted(ckpt_dir.glob("diffusion_epoch*.pt"))
-            if ckpts:
-                diffusion.load(ckpts[-1])
-                log.info(f"Loaded checkpoint: {ckpts[-1].name}")
+        ckpt_path = ensure_diffusion_checkpoint(cfg)
+        if ckpt_path is not None:
+            diffusion.load(ckpt_path)
+            log.info(f"Loaded checkpoint: {ckpt_path.name}")
     except Exception as e:
         log.error(f"Failed to load models: {e}")
         return 1

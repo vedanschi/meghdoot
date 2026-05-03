@@ -32,6 +32,12 @@ from meghdoot.models.vae import SatelliteVAE
 from meghdoot.utils.config import load_config
 from meghdoot.utils.helpers import get_device
 from meghdoot.utils.logging import get_logger
+from meghdoot.deploy.runtime import (
+    ensure_vae_checkpoint,
+    ensure_diffusion_checkpoint,
+    load_backend_environment,
+    prepare_backend_config,
+)
 from meghdoot.deploy.pipeline import (
     download_latest_frames,
     preprocess_frames,
@@ -56,22 +62,29 @@ _state: dict = {}
 @app.on_event("startup")
 async def startup() -> None:
     """Load config + models into GPU memory once at server start."""
-    cfg = load_config()
+    load_backend_environment()
+    cfg = prepare_backend_config(load_config())
     device = get_device(cfg["project"].get("device", "cuda"))
 
     log.info("Loading VAE …")
-    vae = SatelliteVAE(cfg)
+    vae = SatelliteVAE(cfg).to(device).eval()
+    vae_ckpt_path = ensure_vae_checkpoint(cfg)
+    if vae_ckpt_path is not None:
+        vae.load(vae_ckpt_path)
+        log.info(f"Loaded VAE checkpoint: {Path(vae_ckpt_path).name}")
+    else:
+        log.warning("No VAE checkpoint found; backend will use the base VAE weights")
 
     log.info("Loading Diffusion model …")
-    diffusion = MeghdootDiffusion(cfg)
+    diffusion = MeghdootDiffusion(cfg).to(device).eval()
 
-    # Try to load the latest checkpoint
-    ckpt_dir = Path(cfg["diffusion"]["checkpoint_dir"])
-    if ckpt_dir.exists():
-        ckpts = sorted(ckpt_dir.glob("diffusion_epoch*.pt"))
-        if ckpts:
-            diffusion.load(ckpts[-1])
-            log.info(f"Loaded checkpoint: {ckpts[-1].name}")
+    # Try to hydrate the latest checkpoint from local disk or GCS.
+    ckpt_path = ensure_diffusion_checkpoint(cfg)
+    if ckpt_path is not None:
+        diffusion.load(ckpt_path)
+        log.info(f"Loaded checkpoint: {Path(ckpt_path).name}")
+    else:
+        log.warning("No diffusion checkpoint found; backend will start with random weights")
 
     _state["cfg"] = cfg
     _state["vae"] = vae
