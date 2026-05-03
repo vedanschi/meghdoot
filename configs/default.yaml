@@ -181,21 +181,11 @@ diffusion:
 
   # Inference
   inference:
-    num_inference_steps: 50
+    num_inference_steps: 60
     guidance_scale: 1.0           # 2.5 degraded skill in aligned eval; keep conditional path without over-guidance
     prediction_horizon_hours: 3
 
   checkpoint_dir: "checkpoints/diffusion"
-
-# ── Hybrid ConvLSTM + Diffusion Refiner ─────────
-hybrid:
-  enabled: false
-  convlstm_ckpt: "checkpoints/baselines/convlstm.pt"
-  freeze_convlstm: true          # diffusion-only final run; keep hybrid out of the picture
-  use_affine_calibration: false   # disabled for diffusion-only evaluation/training
-  checkpoint_dir: "checkpoints/hybrid"
-  save_every_n_epochs: 5
-  keep_last_checkpoints: 0        # disable pruning; keep all checkpoints
 
 # ── Phase 4: Evaluation & Baselines ─────────────
 evaluation:
