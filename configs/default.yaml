@@ -214,6 +214,9 @@ deployment:
   docker:
     image_name: "meghdoot-ai"
     image_tag: "latest"
+  # GCS bucket for forecast output (pipeline runner)
+  # Set to your bucket name or leave empty to skip GCS upload
+  gcs_bucket: "megdhoot-satellite-data"
 
 # ── Logging ─────────────────────────────────────
 logging:
