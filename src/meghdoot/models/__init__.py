@@ -2,7 +2,6 @@
 
 from meghdoot.models.vae import SatelliteVAE, SSIMLoss, VGGPerceptualLoss
 from meghdoot.models.diffusion import MeghdootDiffusion, MassConservationLoss, EMAModel
-from meghdoot.models.hybrid import ConvLSTMDiffusionHybrid
 from meghdoot.models.channel_fusion import (
     ChannelIntegrationLayer,
     ChannelAttention,
@@ -17,7 +16,6 @@ __all__ = [
     "SSIMLoss",
     "VGGPerceptualLoss",
     "MeghdootDiffusion",
-    "ConvLSTMDiffusionHybrid",
     "MassConservationLoss",
     "EMAModel",
     "ChannelIntegrationLayer",

@@ -15,7 +15,8 @@ import numpy as np
 import torch
 
 from meghdoot.data.dataset import INSATSequenceDataset
-from meghdoot.models.hybrid import ConvLSTMDiffusionHybrid
+from meghdoot.evaluation.baselines import ConvLSTMPredictor
+from meghdoot.models.vae import SatelliteVAE
 from meghdoot.utils.config import load_config
 from meghdoot.utils.helpers import get_device, seed_everything
 from meghdoot.utils.logging import get_logger
@@ -54,9 +55,21 @@ def main() -> None:
 
     processed_dir = Path(args.processed_dir or cfg["data"]["paths"]["processed"])
 
-    # Load hybrid wrapper (gives us a VAE and the ConvLSTM configured for latents)
-    hybrid = ConvLSTMDiffusionHybrid(cfg, convlstm_ckpt=Path(args.convlstm_local), freeze_convlstm=True).to(device)
-    hybrid.eval()
+    # Build VAE + ConvLSTM baseline directly (hybrid wrapper removed)
+    vae = SatelliteVAE(cfg).to(device)
+    vae.eval()
+
+    convlstm_cfg = cfg["evaluation"]["baselines"]["convlstm"]
+    convlstm = ConvLSTMPredictor(
+        in_channels=cfg["diffusion"]["model"]["latent_channels"],
+        hidden_dims=convlstm_cfg["hidden_dims"],
+        kernel_size=convlstm_cfg["kernel_size"],
+    ).to(device)
+    convlstm_ckpt = torch.load(Path(args.convlstm_local), map_location=device, weights_only=True)
+    if isinstance(convlstm_ckpt, dict) and "state_dict" in convlstm_ckpt:
+        convlstm_ckpt = convlstm_ckpt["state_dict"]
+    convlstm.load_state_dict(convlstm_ckpt, strict=False)
+    convlstm.eval()
 
     # Dataset (prefer top-level pixel .pt files)
     past_len = cfg["diffusion"]["conditioning"]["num_history_frames"]
@@ -75,13 +88,13 @@ def main() -> None:
             history_pixel = sample["history"]  # [T, C, H, W]
 
             # Encode history frames -> latent (treat T as batch)
-            history_latent = hybrid.vae.encode(history_pixel.to(device)).unsqueeze(0)  # [1, T, C_z, H_z, W_z]
+            history_latent = vae.encode(history_pixel.to(device)).unsqueeze(0)  # [1, T, C_z, H_z, W_z]
 
             # Reference latent = last history frame
             ref_latent = history_latent[:, -1]
 
             # ConvLSTM forecast (expects latent input)
-            conv_base = hybrid.predict_base(history_latent)  # [B, C_z, H_z, W_z]
+            conv_base = convlstm(history_latent)  # [B, C_z, H_z, W_z]
 
             # Stats
             entry = {

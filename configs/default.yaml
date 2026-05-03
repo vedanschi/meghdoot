@@ -181,7 +181,7 @@ diffusion:
 
   # Inference
   inference:
-    num_inference_steps: 60
+    num_inference_steps: 50
     guidance_scale: 1.0           # 2.5 degraded skill in aligned eval; keep conditional path without over-guidance
     prediction_horizon_hours: 3
 
