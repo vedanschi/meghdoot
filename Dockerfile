@@ -41,10 +41,8 @@ COPY --from=builder /usr/lib/python3.11 /usr/lib/python3.11
 COPY --from=builder /usr/lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu
 COPY --from=builder /lib/x86_64-linux-gnu /lib/x86_64-linux-gnu
 
-# Copy the app code and the MOSDAC config used by the runtime pipeline.
+# Copy the app code and the config needed by the runtime pipeline.
 COPY configs ./configs
-COPY config.json ./config.json
-COPY mdapi.py ./mdapi.py
 COPY src ./src
 COPY pyproject.toml README.md requirements-pinned.txt ./
 
