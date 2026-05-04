@@ -26,8 +26,18 @@ RUN python3.11 -m venv /opt/venv && \
 # ── Stage 2: Runtime ──────────────────────────────
 FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
 
-# Make the runtime stage resilient too, even though it should not need apt during startup.
+# Rewrite apt sources to the working HTTPS mirror BEFORE any apt command.
+# This prevents Cloud Run from timing out on HTTP archive.ubuntu.com.
 RUN sed -i 's|http://archive.ubuntu.com/ubuntu|https://mirrors.edge.kernel.org/ubuntu|g; s|https://archive.ubuntu.com/ubuntu|https://mirrors.edge.kernel.org/ubuntu|g; s|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+
+# CRITICAL FIX: Install X11/graphics runtime libraries directly in the runtime stage.
+# This avoids the fragile and incomplete approach of copying /usr/lib/x86_64-linux-gnu from builder.
+# cv2's native bindings require libx11-6, libxcb1, libsm6, libxext6, libxrender1, and libglib2.0-0.
+# By installing them here via apt, we ensure all symlinks and dependencies are correct.
+RUN apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 && \
+    apt-get install -y --no-install-recommends \
+      libx11-6 libxcb1 libsm6 libxext6 libxrender1 libglib2.0-0 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -37,11 +47,7 @@ COPY --from=builder /usr/bin/python3.11 /usr/bin/python3.11
 COPY --from=builder /usr/bin/python3 /usr/bin/python3
 COPY --from=builder /usr/lib/python3.11 /usr/lib/python3.11
 
-# Copy the native libraries needed by the pinned Python wheels.
-COPY --from=builder /usr/lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu
-COPY --from=builder /lib/x86_64-linux-gnu /lib/x86_64-linux-gnu
-
-# Copy the app code and the config needed by the runtime pipeline.
+# Copy the app code.
 COPY configs ./configs
 COPY src ./src
 COPY pyproject.toml README.md requirements-pinned.txt ./
