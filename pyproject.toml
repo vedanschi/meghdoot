@@ -15,7 +15,7 @@ authors = [
 
 dependencies = [
     # Core Scientific
-    "numpy>=1.24,<2.0",
+    "numpy>=1.24,<2.1",
     "scipy>=1.11",
     "pandas>=2.0",
 
@@ -33,7 +33,6 @@ dependencies = [
     "netCDF4>=1.6",
     "pyproj>=3.6",
     "opencv-python>=4.8",
-    "GDAL>=3.6",
 
     # Visualization & Monitoring
     "matplotlib>=3.8",
