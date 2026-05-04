@@ -19,7 +19,8 @@ FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 libgdal30 libhdf5-103 libnetcdf19 \
-  curl \
+    libxcb1 libsm6 libxext6 libxrender1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for security

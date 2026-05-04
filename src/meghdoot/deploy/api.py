@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from meghdoot.models.diffusion import MeghdootDiffusion
 from meghdoot.models.vae import SatelliteVAE
@@ -56,6 +56,31 @@ app = FastAPI(
 
 # Lazy-loaded models (populated on startup)
 _state: dict = {}
+
+
+def _serve_forecast_blob(blob_name: str) -> Response:
+    cfg = _state.get("cfg", {})
+    bucket_name = cfg.get("deployment", {}).get("gcs_bucket")
+    if not bucket_name:
+        raise HTTPException(500, "GCS bucket not configured")
+
+    try:
+        from google.cloud import storage
+    except ImportError as exc:
+        raise HTTPException(500, "google-cloud-storage is required for forecast proxy") from exc
+
+    client = storage.Client()
+    blob = client.bucket(bucket_name).blob(blob_name)
+    if not blob.exists():
+        raise HTTPException(404, f"Forecast artifact not found: {blob_name}")
+
+    content_type = blob.content_type or (
+        "application/json" if blob_name.endswith(".json") else "image/png"
+    )
+    return Response(
+        content=blob.download_as_bytes(),
+        media_type=content_type,
+    )
 
 
 # ── Lifespan Events ───────────────────────────────
@@ -335,3 +360,15 @@ async def forecast_nowcast(num_steps: int = 6):
             {"status": "error", "message": str(e)},
             status_code=500,
         )
+
+
+@app.get("/forecast/latest/metadata.json")
+async def forecast_latest_metadata() -> Response:
+    return _serve_forecast_blob("forecasts/latest/metadata.json")
+
+
+@app.get("/forecast/latest/{filename}")
+async def forecast_latest_file(filename: str) -> Response:
+    if not filename.startswith("forecast_step_") or not filename.endswith(".png"):
+        raise HTTPException(404, "Unknown forecast artifact")
+    return _serve_forecast_blob(f"forecasts/latest/{filename}")

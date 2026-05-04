@@ -28,10 +28,13 @@ type MetricsPayload = {
 
 const bucket = process.env.NEXT_PUBLIC_GCS_BUCKET || "meghdoot-satellite-data";
 const prefix = process.env.NEXT_PUBLIC_FORECAST_PREFIX || "forecasts/latest";
+const apiOrigin = process.env.NEXT_PUBLIC_API_ORIGIN || "";
 const refreshMs = Number(process.env.NEXT_PUBLIC_REFRESH_MS || "60000");
 const staleAfterMinutes = Number(process.env.NEXT_PUBLIC_STALE_AFTER_MINUTES || "90");
 
-const metadataUrl = `https://storage.googleapis.com/${bucket}/${prefix}/metadata.json`;
+const metadataUrl = apiOrigin
+  ? `${apiOrigin.replace(/\/$/, "")}/forecast/latest/metadata.json`
+  : `https://storage.googleapis.com/${bucket}/${prefix}/metadata.json`;
 
 function timeAgoLabel(isoTs: string | undefined): string {
   if (!isoTs) return "unknown";
@@ -115,7 +118,9 @@ export default function Home() {
 
   const selectedLead = metadata?.lead_times_minutes?.[selectedStep] ?? 0;
   const selectedValidTime = metadata?.valid_times?.[selectedStep] ?? "";
-  const frameUrl = `https://storage.googleapis.com/${bucket}/${prefix}/forecast_step_${selectedStep}.png`;
+  const frameUrl = apiOrigin
+    ? `${apiOrigin.replace(/\/$/, "")}/forecast/latest/forecast_step_${selectedStep}.png`
+    : `https://storage.googleapis.com/${bucket}/${prefix}/forecast_step_${selectedStep}.png`;
 
   const metricRows = [
     { key: "ssim", label: "SSIM", higherIsBetter: true },
