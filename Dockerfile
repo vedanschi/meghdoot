@@ -1,27 +1,46 @@
 # ── Stage 1: Builder ──────────────────────────────
 FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04 AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3.11-venv python3-pip python3.11-dev \
-  gdal-bin libgdal-dev libhdf5-dev libnetcdf-dev \
-    gcc g++ && rm -rf /var/lib/apt/lists/*
+# Install system dependencies with retry logic
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      python3.11 python3.11-venv python3-pip python3.11-dev \
+      libgdal-dev libhdf5-dev libnetcdf-dev \
+      gcc g++ && \
+    rm -rf /var/lib/apt/lists/* || \
+    (echo "First apt-get failed, retrying..." && sleep 10 && \
+     apt-get update && apt-get install -y --no-install-recommends \
+      python3.11 python3.11-venv python3-pip python3.11-dev \
+      libgdal-dev libhdf5-dev libnetcdf-dev \
+      gcc g++ && \
+     rm -rf /var/lib/apt/lists/*)
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
-# Install everything into a virtual environment
-RUN python3.11 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir .
+
+# Create and activate virtual environment, install with retries
+RUN python3.11 -m venv /opt/venv && \
+    . /opt/venv/bin/activate && \
+    pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir . || \
+    (echo "First pip install failed, retrying..." && sleep 10 && \
+     pip install --no-cache-dir .)
 
 # ── Stage 2: Runtime ──────────────────────────────
 FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 libgdal30 libhdf5-103 libnetcdf19 \
-    libxcb1 libsm6 libxext6 libxrender1 \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Install runtime dependencies with retry logic  
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      python3.11 libgdal30 libhdf5-103 libnetcdf19 \
+      libxcb1 libsm6 libxext6 libxrender1 && \
+    rm -rf /var/lib/apt/lists/* || \
+    (echo "First apt-get failed, retrying..." && sleep 10 && \
+     apt-get update && apt-get install -y --no-install-recommends \
+      python3.11 libgdal30 libhdf5-103 libnetcdf19 \
+      libxcb1 libsm6 libxext6 libxrender1 && \
+     rm -rf /var/lib/apt/lists/*)
 
 # Create non-root user for security
 RUN useradd -m appuser
@@ -35,8 +54,6 @@ USER appuser
 
 EXPOSE 8080
 
-# Healthcheck for Cloud Run
-HEALTHCHECK --interval=30s --timeout=3s \
-  CMD sh -c 'curl -f http://localhost:${PORT:-8080}/health || exit 1'
+# Cloud Run will handle health checks via PORT env var and TCP probe
 
 CMD ["sh", "-c", "uvicorn meghdoot.deploy.api:app --host 0.0.0.0 --port ${PORT}"]
