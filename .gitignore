@@ -48,6 +48,13 @@ error_logs/
 
 # MOSDAC credentials – NEVER commit real credentials
 # config.json contains user_credentials; keep it local
+
+# Environment variables – NEVER commit .env files
+.env
+.env.*
+!.env.example
+frontend/.env.*
+!frontend/.env.example
 config.json
 
 # Docker
