@@ -27,7 +27,23 @@ export async function GET() {
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown metrics read error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    // If local metrics file isn't available in the deployed frontend image,
+    // fall back to fetching from the GCS bucket so the frontend can still show metrics.
+    try {
+      const bucket = process.env.NEXT_PUBLIC_GCS_BUCKET || "meghdoot-satellite-data";
+      const url = `https://storage.googleapis.com/${bucket}/metrics.json`;
+      const resp = await fetch(url, { cache: "no-store" });
+      if (!resp.ok) {
+        const msg = `Metrics fetch failed with ${resp.status}`;
+        return NextResponse.json({ error: msg }, { status: 502 });
+      }
+      const parsed = await resp.json();
+      return NextResponse.json(parsed, {
+        headers: { "Cache-Control": "public, max-age=60" },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown metrics read error";
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
   }
 }

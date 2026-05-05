@@ -113,8 +113,24 @@ def download_latest_frames(
             return None
         
         try:
-            # Bulk download will fetch recent files
-            client.bulk_download(dataset_id=cfg["data"].get("dataset_ids", ["3SIMG_L1C_SGP"])[0])
+            data_cfg = cfg.get("data", {})
+            dataset_id = (data_cfg.get("dataset_ids") or ["3SIMG_L1C_SGP"])[0]
+            date_range = data_cfg.get("date_range", {})
+            start_date = date_range.get("start")
+            end_date = date_range.get("end")
+
+            log.info(
+                "MOSDAC fetch window: dataset_id=%s, start=%s, end=%s",
+                dataset_id,
+                start_date or "<default>",
+                end_date or "<default>",
+            )
+
+            client.bulk_download(
+                dataset_id=dataset_id,
+                start_date=start_date,
+                end_date=end_date,
+            )
         finally:
             client.logout()
         

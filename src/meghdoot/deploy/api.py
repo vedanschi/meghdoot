@@ -24,6 +24,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import asyncio
+import uuid
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -345,69 +347,61 @@ async def forecast_nowcast(num_steps: int = 6):
     if "diffusion" not in _state:
         raise HTTPException(503, "Models not loaded")
     
+    # Run the heavy pipeline asynchronously and return immediately.
+    # Scheduler has a short HTTP timeout; run the pipeline in background
+    # so the scheduler receives a 202 quickly.
     try:
-        log.info(f"Cloud Scheduler triggered forecast cycle (num_steps={num_steps})")
-        
-        cfg = _state["cfg"]
-        vae = _state["vae"]
-        diffusion = _state["diffusion"]
-        device = _state["device"]
-        
-        # Step 1: Download
-        raw_files = download_latest_frames(cfg, n_frames=3)
-        if not raw_files:
-            return JSONResponse(
-                {"status": "failed", "step": "download", "message": "No frames downloaded"},
-                status_code=500,
-            )
-        
-        # Step 2: Preprocess
-        processed_files = preprocess_frames(cfg, raw_files)
-        if not processed_files:
-            return JSONResponse(
-                {"status": "failed", "step": "preprocessing", "message": "Preprocessing failed"},
-                status_code=500,
-            )
-        
-        # Step 3: Generate forecast
-        t0 = time.time()
-        forecast_frames = generate_forecast_sequence(
-            cfg,
-            vae,
-            diffusion,
-            processed_files,
-            num_steps=num_steps,
-            device=device,
-        )
-        if forecast_frames is None:
-            return JSONResponse(
-                {"status": "failed", "step": "inference", "message": "Forecast generation failed"},
-                status_code=500,
-            )
-        inference_time = time.time() - t0
-        
-        # Step 4: Publish
-        if not publish_to_bucket(cfg, forecast_frames):
-            return JSONResponse(
-                {"status": "failed", "step": "publishing", "message": "GCS upload failed"},
-                status_code=500,
-            )
-        
-        total_time = time.time() - t0
-        
-        return JSONResponse({
-            "status": "success",
-            "num_steps": len(forecast_frames),
-            "inference_time_sec": round(inference_time, 2),
-            "total_time_sec": round(total_time, 2),
-            "bucket": cfg.get("deployment", {}).get("gcs_bucket"),
-            "forecast_location": "gs://{bucket}/forecasts/latest/".format(
-                bucket=cfg.get("deployment", {}).get("gcs_bucket")
-            ),
-        })
-        
-    except Exception as e:
-        log.error(f"Forecast cycle failed: {e}", exc_info=True)
+        run_id = uuid.uuid4().hex
+        log.info(f"Enqueuing background forecast run {run_id} (num_steps={num_steps})")
+
+        def _run_sync():
+            try:
+                cfg = _state["cfg"]
+                vae = _state["vae"]
+                diffusion = _state["diffusion"]
+                device = _state["device"]
+
+                t0 = time.time()
+
+                raw_files = download_latest_frames(cfg, n_frames=3)
+                if not raw_files:
+                    log.error("Background run %s: no frames downloaded", run_id)
+                    return
+
+                processed_files = preprocess_frames(cfg, raw_files)
+                if not processed_files:
+                    log.error("Background run %s: preprocessing failed", run_id)
+                    return
+
+                forecast_frames = generate_forecast_sequence(
+                    cfg, vae, diffusion, processed_files, num_steps=num_steps, device=device
+                )
+                if forecast_frames is None:
+                    log.error("Background run %s: inference failed", run_id)
+                    return
+
+                if not publish_to_bucket(cfg, forecast_frames):
+                    log.error("Background run %s: publishing failed", run_id)
+                    return
+
+                total_time = time.time() - t0
+                log.info(
+                    "Background run %s completed: %d steps in %.2fs",
+                    run_id,
+                    len(forecast_frames),
+                    total_time,
+                )
+            except Exception:
+                log.exception("Background run %s failed", run_id)
+
+        # schedule the synchronous runner in a background thread
+        asyncio.create_task(asyncio.to_thread(_run_sync))
+
+        return JSONResponse({"status": "accepted", "run_id": run_id}, status_code=202)
+
+    except Exception:
+        log.exception("Failed to enqueue background forecast")
+        raise HTTPException(500, "Failed to start forecast job")
         return JSONResponse(
             {"status": "error", "message": str(e)},
             status_code=500,

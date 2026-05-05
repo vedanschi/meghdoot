@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import re
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,25 @@ def prepare_backend_config(cfg: dict[str, Any]) -> dict[str, Any]:
     gcs_bucket = os.environ.get("MEGHDOOT_GCS_BUCKET")
     if gcs_bucket:
         deployment_cfg["gcs_bucket"] = gcs_bucket
+
+    dataset_id = os.environ.get("MEGHDOOT_MOSDAC_DATASET_ID")
+    if dataset_id:
+        data_cfg["dataset_ids"] = [dataset_id]
+
+    lookback_hours_raw = os.environ.get("MEGHDOOT_MOSDAC_LOOKBACK_HOURS")
+    if lookback_hours_raw or is_cloud_run():
+        try:
+            lookback_hours = int(lookback_hours_raw) if lookback_hours_raw else 24
+        except ValueError:
+            lookback_hours = 24
+
+        lookback_hours = max(lookback_hours, 1)
+        end_time = datetime.utcnow()
+        start_time = end_time - timedelta(hours=lookback_hours)
+        data_cfg["date_range"] = {
+            "start": start_time.strftime("%Y-%m-%d"),
+            "end": end_time.strftime("%Y-%m-%d"),
+        }
 
     api_port = os.environ.get("PORT")
     if api_port:

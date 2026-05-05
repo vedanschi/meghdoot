@@ -13,8 +13,8 @@ data:
   # Browse dataset IDs at: https://mosdac.gov.in/catalog/satellite.php
   mosdac_config: "config.json"    # path to official MOSDAC config.json
   dataset_ids:                    # MOSDAC datasetId values to download
-    - "3RIMG_L1C_SGP"             # INSAT-3DR Imager L1B Standard
-    # - "3SIMG_L1C_SGP"           # INSAT-3DS Imager L1B Standard
+    - "3SIMG_L1C_SGP"             # INSAT-3DS Imager L1B Standard
+    # - "3RIMG_L1C_SGP"           # INSAT-3DR Imager L1B Standard
   satellites: ["INSAT-3DR", "INSAT-3DS"]
   channels: ["TIR1", "WV"]   # 2 spectral bands
   supported_formats: ["hdf5", "h5", "nc", "nc4"]  # HDF5 + NetCDF
@@ -216,7 +216,7 @@ deployment:
     image_tag: "latest"
   # GCS bucket for forecast output (pipeline runner)
   # Set to your bucket name or leave empty to skip GCS upload
-  gcs_bucket: "megdhoot-satellite-data"
+  gcs_bucket: "meghdoot-satellite-data"
 
 # ── Logging ─────────────────────────────────────
 logging:
