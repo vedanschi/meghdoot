@@ -24,8 +24,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from meghdoot.models.diffusion import MeghdootDiffusion
 from meghdoot.models.vae import SatelliteVAE
@@ -88,40 +89,61 @@ def _serve_forecast_blob(blob_name: str) -> Response:
 async def startup() -> None:
     """Load config + models into GPU memory once at server start."""
     load_backend_environment()
-    cfg = prepare_backend_config(load_config())
-    device = get_device(cfg["project"].get("device", "cuda"))
+    _state.pop("startup_error", None)
 
-    log.info("Loading VAE …")
-    vae = SatelliteVAE(cfg).to(device).eval()
-    vae_ckpt_path = ensure_vae_checkpoint(cfg)
-    if vae_ckpt_path is not None:
-        vae.load(vae_ckpt_path)
-        log.info(f"Loaded VAE checkpoint: {Path(vae_ckpt_path).name}")
-    else:
-        log.warning("No VAE checkpoint found; backend will use the base VAE weights")
+    try:
+        cfg = prepare_backend_config(load_config())
+        device = get_device(cfg["project"].get("device", "cuda"))
 
-    log.info("Loading Diffusion model …")
-    diffusion = MeghdootDiffusion(cfg).to(device).eval()
+        log.info("Loading VAE …")
+        vae = SatelliteVAE(cfg).to(device).eval()
+        try:
+            vae_ckpt_path = ensure_vae_checkpoint(cfg)
+        except Exception:
+            log.exception("Failed to resolve VAE checkpoint; starting with base VAE weights")
+            vae_ckpt_path = None
 
-    # Try to hydrate the latest checkpoint from local disk or GCS.
-    ckpt_path = ensure_diffusion_checkpoint(cfg)
-    if ckpt_path is not None:
-        diffusion.load(ckpt_path)
-        log.info(f"Loaded checkpoint: {Path(ckpt_path).name}")
-    else:
-        log.warning("No diffusion checkpoint found; backend will start with random weights")
+        if vae_ckpt_path is not None:
+            vae.load(vae_ckpt_path)
+            log.info(f"Loaded VAE checkpoint: {Path(vae_ckpt_path).name}")
+        else:
+            log.warning("No VAE checkpoint found; backend will use the base VAE weights")
 
-    _state["cfg"] = cfg
-    _state["vae"] = vae
-    _state["diffusion"] = diffusion
-    _state["device"] = device
-    log.info("Meghdoot-AI API ready ✓")
+        log.info("Loading Diffusion model …")
+        diffusion = MeghdootDiffusion(cfg).to(device).eval()
+
+        try:
+            ckpt_path = ensure_diffusion_checkpoint(cfg)
+        except Exception:
+            log.exception("Failed to resolve diffusion checkpoint; starting with random weights")
+            ckpt_path = None
+
+        if ckpt_path is not None:
+            diffusion.load(ckpt_path)
+            log.info(f"Loaded checkpoint: {Path(ckpt_path).name}")
+        else:
+            log.warning("No diffusion checkpoint found; backend will start with random weights")
+
+        _state["cfg"] = cfg
+        _state["vae"] = vae
+        _state["diffusion"] = diffusion
+        _state["device"] = device
+        log.info("Meghdoot-AI API ready ✓")
+    except Exception as exc:
+        # Keep the process alive so Cloud Run can expose logs and health endpoints.
+        _state["startup_error"] = str(exc)
+        log.exception("Startup failed; API will run in degraded mode")
 
 
 # ── Health Check ──────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "gpu": torch.cuda.is_available()}
+    startup_error = _state.get("startup_error")
+    return {
+        "status": "degraded" if startup_error else "healthy",
+        "gpu": torch.cuda.is_available(),
+        "startup_error": startup_error,
+    }
 
 
 @app.get("/model/info")
@@ -142,9 +164,7 @@ async def model_info():
 # ── Prediction Endpoint ──────────────────────────
 @app.post("/predict")
 async def predict(
-    frame1: UploadFile = File(..., description="History frame 1 (.npy)"),
-    frame2: UploadFile = File(..., description="History frame 2 (.npy)"),
-    frame3: UploadFile = File(..., description="History frame 3 (.npy)"),
+    request: Request,
     num_steps: int = 50,
 ):
     """Run diffusion inference on 3 uploaded history frames.
@@ -163,8 +183,25 @@ async def predict(
     device = _state["device"]
 
     try:
+        try:
+            form = await request.form()
+        except Exception as exc:
+            raise HTTPException(
+                503,
+                "Multipart form parsing is unavailable. Ensure python-multipart is installed in the runtime image.",
+            ) from exc
+
+        uploads = [form.get("frame1"), form.get("frame2"), form.get("frame3")]
+        if any(upload is None for upload in uploads):
+            raise HTTPException(400, "Missing required form files: frame1, frame2, frame3")
+        typed_uploads: list[StarletteUploadFile] = []
+        for upload in uploads:
+            if not isinstance(upload, StarletteUploadFile):
+                raise HTTPException(400, "frame1/frame2/frame3 must be uploaded files")
+            typed_uploads.append(upload)
+
         frames = []
-        for f in [frame1, frame2, frame3]:
+        for f in typed_uploads:
             content = await f.read()
             arr = np.load(io.BytesIO(content)).astype(np.float32)
             frames.append(arr)
@@ -214,9 +251,7 @@ async def predict(
 
 @app.post("/predict/json")
 async def predict_json(
-    frame1: UploadFile = File(...),
-    frame2: UploadFile = File(...),
-    frame3: UploadFile = File(...),
+    request: Request,
     num_steps: int = 50,
 ):
     """Same as /predict but returns summary statistics as JSON
@@ -229,8 +264,25 @@ async def predict_json(
     device = _state["device"]
 
     try:
+        try:
+            form = await request.form()
+        except Exception as exc:
+            raise HTTPException(
+                503,
+                "Multipart form parsing is unavailable. Ensure python-multipart is installed in the runtime image.",
+            ) from exc
+
+        uploads = [form.get("frame1"), form.get("frame2"), form.get("frame3")]
+        if any(upload is None for upload in uploads):
+            raise HTTPException(400, "Missing required form files: frame1, frame2, frame3")
+        typed_uploads: list[StarletteUploadFile] = []
+        for upload in uploads:
+            if not isinstance(upload, StarletteUploadFile):
+                raise HTTPException(400, "frame1/frame2/frame3 must be uploaded files")
+            typed_uploads.append(upload)
+
         frames = []
-        for f in [frame1, frame2, frame3]:
+        for f in typed_uploads:
             content = await f.read()
             arr = np.load(io.BytesIO(content)).astype(np.float32)
             frames.append(arr)

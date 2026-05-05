@@ -4,6 +4,7 @@ Configuration loader – merges YAML defaults with CLI overrides.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +50,8 @@ def load_config(path: str | Path | None = None, overrides: dict[str, Any] | None
     if path:
         path = Path(path)
     else:
-        path = _resolve_default_config()
+        env_path = os.environ.get("MEGHDOOT_CONFIG_PATH")
+        path = Path(env_path) if env_path else _resolve_default_config()
 
     with open(path) as f:
         cfg = yaml.safe_load(f)
