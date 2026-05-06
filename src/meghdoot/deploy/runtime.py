@@ -48,6 +48,20 @@ def _apply_path_override(cfg: dict[str, Any], section: str, key: str, value: Pat
     cfg.setdefault(section, {}).setdefault("paths", {})[key] = str(value)
 
 
+def _current_mosdac_window() -> dict[str, str]:
+    """Return a live UTC search window for MOSDAC queries.
+
+    The search window starts at 00:00 UTC of the current day and ends at
+    the current UTC timestamp so each run always queries fresh data.
+    """
+    end_time = datetime.utcnow().replace(microsecond=0)
+    start_time = end_time.replace(hour=0, minute=0, second=0)
+    return {
+        "start": start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
 def prepare_backend_config(cfg: dict[str, Any]) -> dict[str, Any]:
     """Apply deployment-time overrides to the loaded config.
 
@@ -75,19 +89,20 @@ def prepare_backend_config(cfg: dict[str, Any]) -> dict[str, Any]:
         data_cfg["dataset_ids"] = [dataset_id]
 
     lookback_hours_raw = os.environ.get("MEGHDOOT_MOSDAC_LOOKBACK_HOURS")
-    if lookback_hours_raw or is_cloud_run():
+    if lookback_hours_raw:
         try:
-            lookback_hours = int(lookback_hours_raw) if lookback_hours_raw else 24
+            lookback_hours = max(int(lookback_hours_raw), 1)
         except ValueError:
             lookback_hours = 24
 
-        lookback_hours = max(lookback_hours, 1)
-        end_time = datetime.utcnow()
+        end_time = datetime.utcnow().replace(microsecond=0)
         start_time = end_time - timedelta(hours=lookback_hours)
         data_cfg["date_range"] = {
-            "start": start_time.strftime("%Y-%m-%d"),
-            "end": end_time.strftime("%Y-%m-%d"),
+            "start": start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+    else:
+        data_cfg["date_range"] = _current_mosdac_window()
 
     api_port = os.environ.get("PORT")
     if api_port:

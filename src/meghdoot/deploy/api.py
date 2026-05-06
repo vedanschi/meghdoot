@@ -377,10 +377,11 @@ async def forecast_nowcast(num_steps: int = 6):
 
                 # Step 1: Download fresh satellite data (MOSDAC-first, cache fallback)
                 log.info("Background run %s: Step 1 - Acquiring forecast data...", run_id)
-                raw_files = download_forecast_data(cfg, n_frames=3)
-                if not raw_files:
+                download_result = download_forecast_data(cfg, n_frames=3)
+                if not download_result:
                     log.error("Background run %s: failed to acquire satellite data", run_id)
                     return
+                raw_files, observation_time = download_result
 
                 # Step 2: Preprocess raw files to tensors (with cache fallback)
                 log.info("Background run %s: Step 2 - Preprocessing to tensors...", run_id)
@@ -404,7 +405,13 @@ async def forecast_nowcast(num_steps: int = 6):
 
                 # Step 4: Publish to bucket
                 log.info("Background run %s: Step 4 - Publishing forecast...", run_id)
-                if not publish_to_bucket(cfg, forecast_frames, current_observation=current_observation, forecast_latents=forecast_latents):
+                if not publish_to_bucket(
+                    cfg,
+                    forecast_frames,
+                    observation_time=observation_time,
+                    current_observation=current_observation,
+                    forecast_latents=forecast_latents,
+                ):
                     log.error("Background run %s: publishing failed", run_id)
                     return
 

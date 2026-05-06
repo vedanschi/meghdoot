@@ -165,6 +165,7 @@ class MOSDACClient:
         self.cfg = cfg
         self.raw_dir = Path(cfg["data"]["paths"]["raw"])
         self.organize_by_date: bool = True
+        self.last_download_observation_time: datetime | None = None
 
         # ── Resolve credentials ───────────────────────
         self.username: str = ""
@@ -642,14 +643,20 @@ class MOSDACClient:
             return []
 
         all_downloaded: list[Path] = []
+        latest_observation_time: datetime | None = None
 
         try:
             for ds_id in ids:
-                downloaded = self._download_dataset(ds_id)
+                downloaded, dataset_observation_time = self._download_dataset(ds_id)
                 all_downloaded.extend(downloaded)
+                if dataset_observation_time is not None:
+                    if latest_observation_time is None or dataset_observation_time > latest_observation_time:
+                        latest_observation_time = dataset_observation_time
         finally:
             # Restore original date range
             self._start_time, self._end_time = orig_start, orig_end
+
+        self.last_download_observation_time = latest_observation_time
 
         log.info(
             f"Bulk download complete: {len(all_downloaded)} files across "
@@ -657,21 +664,22 @@ class MOSDACClient:
         )
         return all_downloaded
 
-    def _download_dataset(self, dataset_id: str) -> list[Path]:
+    def _download_dataset(self, dataset_id: str) -> tuple[list[Path], datetime | None]:
         """Search + paginated download for a single datasetId."""
         # Initial search to get total count
         search_result = self.search(dataset_id)
         if not search_result:
-            return []
+            return [], None
 
         total_files = search_result.get("totalResults", 0)
         if total_files == 0:
             log.warning(f"No files found for dataset '{dataset_id}'")
-            return []
+            return [], None
 
         log.info(f"Starting download of {total_files:,} files for '{dataset_id}'")
 
         downloaded: list[Path] = []
+        latest_observation_time: datetime | None = None
         counter = 1
         start_index = 1
 
@@ -705,6 +713,12 @@ class MOSDACClient:
                     identifier = entry.get("identifier", "")
                     record_id = entry.get("id", "")
                     prod_date = entry.get("updated")
+                    entry_time: datetime | None = None
+                    if prod_date:
+                        try:
+                            entry_time = datetime.strptime(prod_date, "%Y-%m-%dT%H:%M:%SZ")
+                        except ValueError:
+                            entry_time = None
 
                     path = self._download_file(
                         record_id=record_id,
@@ -717,6 +731,9 @@ class MOSDACClient:
 
                     if path and path.exists():
                         downloaded.append(path)
+                        if entry_time is not None:
+                            if latest_observation_time is None or entry_time > latest_observation_time:
+                                latest_observation_time = entry_time
 
                     counter += 1
 
@@ -729,7 +746,7 @@ class MOSDACClient:
                 log.error(f"Paginated fetch error: {e}")
                 break
 
-        return downloaded
+        return downloaded, latest_observation_time
 
 
 # ── Helpers ─────────────────────────────────────────

@@ -48,6 +48,15 @@ from meghdoot.deploy.runtime import (
 log = get_logger(__name__)
 
 
+def latest_file_timestamp(files: list[Path]) -> Optional[datetime]:
+    """Return the newest file modification timestamp as UTC datetime."""
+    if not files:
+        return None
+
+    newest_mtime = max(path.stat().st_mtime for path in files)
+    return datetime.utcfromtimestamp(newest_mtime).replace(microsecond=0)
+
+
 def normalize_to_image(arr: np.ndarray) -> np.ndarray:
     """Convert [-1, 1] normalized array to [0, 255] uint8 for PNG.
     
@@ -135,7 +144,7 @@ def build_georeference_metadata(cfg: dict) -> dict[str, Any]:
 def download_latest_frames(
     cfg: dict,
     n_frames: int = 3,
-) -> Optional[list[Path]]:
+) -> Optional[tuple[list[Path], Optional[datetime]]]:
     """Download latest INSAT frames from MOSDAC.
     
     Parameters
@@ -172,28 +181,23 @@ def download_latest_frames(
                 end_date or "<default>",
             )
 
-            client.bulk_download(
+            downloaded_files = client.bulk_download(
                 dataset_id=dataset_id,
                 start_date=start_date,
                 end_date=end_date,
             )
+            if downloaded_files:
+                ordered_files = sorted(
+                    downloaded_files,
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )[:n_frames]
+                observation_time = client.last_download_observation_time or latest_file_timestamp(ordered_files)
+                return ordered_files, observation_time
+            log.warning("MOSDAC search completed but produced no usable files")
+            return None
         finally:
             client.logout()
-        
-        # Find the latest n_frames files
-        raw_dir = Path(cfg["data"]["paths"]["raw"])
-        files = sorted(
-            list(raw_dir.rglob("*.h*5"))
-            + list(raw_dir.rglob("*.nc"))
-            + list(raw_dir.rglob("*.nc4")),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )[:n_frames]
-        
-        if len(files) < n_frames:
-            log.warning(f"Expected {n_frames} files, found only {len(files)}")
-        
-        return files if files else None
         
     except Exception as e:
         log.error(f"Download failed: {e}")
@@ -498,7 +502,7 @@ def get_processed_frames_from_gcs(
 def download_forecast_data(
     cfg: dict,
     n_frames: int = 3,
-) -> Optional[list[Path]]:
+) -> Optional[tuple[list[Path], Optional[datetime]]]:
     """Download fresh satellite data for forecast.
     
     Prioritization order (MOSDAC first, cache fallback only):
@@ -515,15 +519,16 @@ def download_forecast_data(
     
     # Try fresh MOSDAC download FIRST unless cache-only mode
     if not cache_only_mode:
-        fresh_raw_files = download_latest_frames(cfg, n_frames=n_frames)
-        if fresh_raw_files:
+        fresh_download = download_latest_frames(cfg, n_frames=n_frames)
+        if fresh_download:
+            fresh_raw_files, observation_time = fresh_download
             log.info(
                 "✓ Download successful: acquired %s fresh frame(s) from MOSDAC",
                 len(fresh_raw_files),
             )
             # Mirror to GCS for future cache fallback
             upload_raw_frames_to_gcs(cfg, fresh_raw_files)
-            return fresh_raw_files
+            return fresh_raw_files, observation_time
         log.warning("MOSDAC download failed; attempting cache fallback...")
     else:
         log.info("Cache-only mode enabled: skipping MOSDAC download")
@@ -531,20 +536,22 @@ def download_forecast_data(
     # Fallback 1: Try GCS cache
     gcs_raw_files = get_raw_frames_from_gcs(cfg, n_frames=n_frames)
     if gcs_raw_files:
+        observation_time = latest_file_timestamp(gcs_raw_files)
         log.info(
             "⊝ Download fallback (GCS): using %s cached raw frame(s) from GCS",
             len(gcs_raw_files),
         )
-        return gcs_raw_files
+        return gcs_raw_files, observation_time
     
     # Fallback 2: Try local cache
     local_raw_files = get_cached_raw_frames(cfg, n_frames=n_frames)
     if local_raw_files:
+        observation_time = latest_file_timestamp(local_raw_files)
         log.warning(
             "⊝ Download fallback (local): using %s cached raw frame(s) from local disk",
             len(local_raw_files),
         )
-        return local_raw_files
+        return local_raw_files, observation_time
     
     log.error("All download attempts failed (MOSDAC, GCS, local cache)")
     return None
@@ -614,7 +621,7 @@ def generate_forecast_sequence(
     processed_files: list[Path],
     num_steps: int = 6,
     device: Optional[torch.device] = None,
-) -> Optional[tuple[list[np.ndarray], np.ndarray]]:
+) -> Optional[tuple[list[np.ndarray], np.ndarray, list[torch.Tensor]]]:
     """Generate multi-step forecast via recursive rollout.
     
     Parameters
@@ -929,10 +936,11 @@ def main() -> int:
     
     # Step 1: Download fresh satellite data (MOSDAC-first, cache fallback)
     log.info("Step 1: Acquiring forecast data...")
-    raw_files = download_forecast_data(cfg, n_frames=3)
-    if not raw_files:
+    download_result = download_forecast_data(cfg, n_frames=3)
+    if not download_result:
         log.error("Pipeline failed to acquire any satellite data")
         return 1
+    raw_files, observation_time = download_result
     
     # Step 1b: Preprocess raw files to tensors (with cache fallback if preprocessing fails)
     log.info("Step 2: Preprocessing to tensors...")
@@ -982,6 +990,7 @@ def main() -> int:
     if not publish_to_bucket(
         cfg,
         forecast_frames,
+        observation_time=observation_time,
         current_observation=current_observation,
         forecast_latents=forecast_latents,
     ):
