@@ -218,7 +218,7 @@ def generate_forecast_sequence(
     diffusion : MeghdootDiffusion
         Diffusion model
     processed_files : list[Path]
-        Latest 3 preprocessed tensor files
+        Latest preprocessed tensor files, ideally 3 or more
     num_steps : int
         Number of forecast steps to generate
     device : torch.device
@@ -235,15 +235,23 @@ def generate_forecast_sequence(
     try:
         log.info(f"Generating {num_steps}-step forecast...")
         
-        # Load latest 3 frames
+        # Load the newest available frames.
         history_tensors = []
         for fp in sorted(processed_files)[-3:]:
             t = torch.load(fp, map_location=device)  # [2, H, W]
             history_tensors.append(t)
         
-        if len(history_tensors) < 3:
-            log.error(f"Need 3 history frames, got {len(history_tensors)}")
+        if not history_tensors:
+            log.error("Need at least 1 history frame, got 0")
             return None
+
+        if len(history_tensors) < 3:
+            missing = 3 - len(history_tensors)
+            log.warning(
+                "Only %s history frame(s) available; padding with the latest frame to reach 3.",
+                len(history_tensors),
+            )
+            history_tensors.extend(history_tensors[-1].clone() for _ in range(missing))
         
         # Stack into [1, 3, 2, H, W]
         history_pixel = torch.stack(history_tensors).unsqueeze(0).to(device)  # [1, 3, 2, H, W]

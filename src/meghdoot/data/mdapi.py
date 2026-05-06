@@ -574,10 +574,16 @@ class MOSDACClient:
                 time.sleep(delay)
 
             except requests.RequestException as e:
-                log.error(f"Download error for {identifier}: {e}")
+                if delay is None:
+                    log.error(f"Download error for {identifier}: {e}")
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                    return None
+
+                log.warning(f"Download stream error, retrying in {delay}s… ({e})")
                 if tmp_path.exists():
                     tmp_path.unlink()
-                return None
+                time.sleep(delay)
 
         return None
 
