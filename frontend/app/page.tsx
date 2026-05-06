@@ -32,9 +32,7 @@ const apiOrigin = process.env.NEXT_PUBLIC_API_ORIGIN || "";
 const refreshMs = Number(process.env.NEXT_PUBLIC_REFRESH_MS || "60000");
 const staleAfterMinutes = Number(process.env.NEXT_PUBLIC_STALE_AFTER_MINUTES || "90");
 
-const metadataUrl = apiOrigin
-  ? `${apiOrigin.replace(/\/$/, "")}/forecast/latest/metadata.json`
-  : `https://storage.googleapis.com/${bucket}/${prefix}/metadata.json`;
+const metadataUrl = "/api/forecast/latest/metadata";
 
 function timeAgoLabel(isoTs: string | undefined): string {
   if (!isoTs) return "unknown";
@@ -118,9 +116,7 @@ export default function Home() {
 
   const selectedLead = metadata?.lead_times_minutes?.[selectedStep] ?? 0;
   const selectedValidTime = metadata?.valid_times?.[selectedStep] ?? "";
-  const frameUrl = apiOrigin
-    ? `${apiOrigin.replace(/\/$/, "")}/forecast/latest/forecast_step_${selectedStep}.png`
-    : `https://storage.googleapis.com/${bucket}/${prefix}/forecast_step_${selectedStep}.png`;
+  const frameUrl = `/api/forecast/latest/forecast_step_${selectedStep}.png`;
 
   const metricRows = [
     { key: "ssim", label: "SSIM", higherIsBetter: true },
