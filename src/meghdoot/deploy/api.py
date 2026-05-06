@@ -42,9 +42,8 @@ from meghdoot.deploy.runtime import (
     prepare_backend_config,
 )
 from meghdoot.deploy.pipeline import (
-    download_latest_frames,
-    preprocess_frames,
     generate_forecast_sequence,
+    prepare_history_frames,
     publish_to_bucket,
 )
 
@@ -363,14 +362,9 @@ async def forecast_nowcast(num_steps: int = 6):
 
                 t0 = time.time()
 
-                raw_files = download_latest_frames(cfg, n_frames=3)
-                if not raw_files:
-                    log.error("Background run %s: no frames downloaded", run_id)
-                    return
-
-                processed_files = preprocess_frames(cfg, raw_files)
+                processed_files = prepare_history_frames(cfg, n_frames=3)
                 if not processed_files:
-                    log.error("Background run %s: preprocessing failed", run_id)
+                    log.error("Background run %s: history frame resolution failed", run_id)
                     return
 
                 forecast_frames = generate_forecast_sequence(

@@ -285,34 +285,49 @@ class MOSDACClient:
 
         payload = {"username": self.username, "password": self.password}
 
-        try:
-            resp = requests.post(_TOKEN_URL, json=payload, timeout=30)
+        for attempt, delay in enumerate(_RETRY_DELAYS + [None]):  # type: ignore[list-item]
+            try:
+                # Use separate connect/read limits: connect can fail during network blips,
+                # read may legitimately take longer when MOSDAC is under load.
+                resp = requests.post(_TOKEN_URL, json=payload, timeout=(15, 60))
 
-            if resp.status_code == 503:
-                msg = resp.json().get("message", "Service unavailable")
-                log.error(f"MOSDAC server maintenance: {msg}")
+                if resp.status_code == 503:
+                    msg = resp.json().get("message", "Service unavailable")
+                    if delay is None:
+                        log.error(f"MOSDAC server maintenance: {msg}")
+                        return False
+                    log.warning(f"MOSDAC unavailable, retrying in {delay}s… ({msg})")
+                    time.sleep(delay)
+                    continue
+
+                if resp.status_code == 400:
+                    err = resp.json().get("error", "Validation error")
+                    log.error(f"MOSDAC auth validation error: {err}")
+                    return False
+
+                if resp.status_code == 401:
+                    err = resp.json().get("error", "Invalid credentials")
+                    log.error(f"MOSDAC auth failed: {err}")
+                    return False
+
+                resp.raise_for_status()
+                tokens = resp.json()
+                self._access_token = tokens.get("access_token")
+                self._refresh_token = tokens.get("refresh_token")
+                log.info(f"Authenticated with MOSDAC as '{self.username}'")
+                return True
+
+            except (requests.ConnectionError, requests.Timeout) as e:
+                if delay is None:
+                    log.error(f"MOSDAC authentication request failed: {e}")
+                    return False
+                log.warning(f"MOSDAC auth network error, retrying in {delay}s… ({e})")
+                time.sleep(delay)
+            except requests.RequestException as e:
+                log.error(f"MOSDAC authentication request failed: {e}")
                 return False
 
-            if resp.status_code == 400:
-                err = resp.json().get("error", "Validation error")
-                log.error(f"MOSDAC auth validation error: {err}")
-                return False
-
-            if resp.status_code == 401:
-                err = resp.json().get("error", "Invalid credentials")
-                log.error(f"MOSDAC auth failed: {err}")
-                return False
-
-            resp.raise_for_status()
-            tokens = resp.json()
-            self._access_token = tokens.get("access_token")
-            self._refresh_token = tokens.get("refresh_token")
-            log.info(f"Authenticated with MOSDAC as '{self.username}'")
-            return True
-
-        except requests.RequestException as e:
-            log.error(f"MOSDAC authentication request failed: {e}")
-            return False
+        return False
 
     def _refresh_access_token(self) -> bool:
         """Refresh an expired access token.

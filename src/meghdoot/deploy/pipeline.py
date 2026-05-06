@@ -21,10 +21,11 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import torch
@@ -197,6 +198,148 @@ def preprocess_frames(
     except Exception as e:
         log.error(f"Preprocessing failed: {e}")
         return None
+
+
+def get_cached_processed_frames(
+    cfg: dict,
+    n_frames: int = 3,
+) -> list[Path]:
+    """Fetch latest processed tensors from local cache.
+
+    Parameters
+    ----------
+    cfg : dict
+        Meghdoot config
+    n_frames : int
+        Number of frames required
+
+    Returns
+    -------
+    list[Path]
+        Latest cached processed tensors, newest-first slicing then sorted ascending
+    """
+    processed_dir = Path(cfg["data"]["paths"]["processed"])
+    files = sorted(
+        processed_dir.rglob("*.pt"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[:n_frames]
+
+    if len(files) < n_frames:
+        log.warning(
+            "Cache has only %s processed frame(s); requested %s",
+            len(files),
+            n_frames,
+        )
+
+    return sorted(files)
+
+
+def get_processed_frames_from_gcs(
+    cfg: dict,
+    n_frames: int = 3,
+) -> list[Path]:
+    """Download latest processed tensors from GCS into local processed cache.
+
+    Controlled by:
+    - ``MEGHDOOT_PROCESSED_GCS_PREFIX``: preferred prefix in bucket
+      (default: ``processed/``)
+    """
+    bucket_name = cfg.get("deployment", {}).get("gcs_bucket")
+    if not bucket_name:
+        log.warning("No deployment.gcs_bucket configured; cannot fetch processed cache from GCS")
+        return []
+
+    try:
+        from google.cloud import storage
+    except ImportError:
+        log.warning("google-cloud-storage not installed; cannot fetch processed cache from GCS")
+        return []
+
+    preferred_prefix = os.environ.get("MEGHDOOT_PROCESSED_GCS_PREFIX", "processed/").strip()
+    candidate_prefixes = [preferred_prefix] if preferred_prefix else []
+    for fallback_prefix in ("processed/", "data/processed/", "meghdoot/processed/"):
+        if fallback_prefix not in candidate_prefixes:
+            candidate_prefixes.append(fallback_prefix)
+
+    processed_dir = Path(cfg["data"]["paths"]["processed"])
+    ensure_dir(processed_dir)
+
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+
+    blobs: list[Any] = []
+    used_prefix = ""
+    for prefix in candidate_prefixes:
+        prefix_blobs = [blob for blob in bucket.list_blobs(prefix=prefix) if blob.name.endswith(".pt")]
+        if prefix_blobs:
+            blobs = prefix_blobs
+            used_prefix = prefix
+            break
+
+    if not blobs:
+        log.warning(
+            "No processed .pt tensors found in gs://%s under prefixes: %s",
+            bucket_name,
+            ", ".join(candidate_prefixes),
+        )
+        return []
+
+    def blob_sort_key(blob: Any) -> tuple[float, str]:
+        timestamp = getattr(blob, "updated", None) or getattr(blob, "time_created", None)
+        created_value = timestamp.timestamp() if timestamp is not None else 0.0
+        return created_value, blob.name
+
+    latest_blobs = sorted(blobs, key=blob_sort_key, reverse=True)[:n_frames]
+    downloaded: list[Path] = []
+    for blob in latest_blobs:
+        destination = processed_dir / Path(blob.name).name
+        blob.download_to_filename(str(destination))
+        downloaded.append(destination)
+
+    log.info(
+        "Loaded %s processed frame(s) from gs://%s/%s for fallback",
+        len(downloaded),
+        bucket_name,
+        used_prefix,
+    )
+    return sorted(downloaded)
+
+
+def prepare_history_frames(
+    cfg: dict,
+    n_frames: int = 3,
+) -> Optional[list[Path]]:
+    """Resolve history tensors with download-first, cache-fallback behavior.
+
+    The function tries fresh MOSDAC download + preprocess first. If that fails
+    (including auth/network errors), it falls back to existing processed tensors
+    in local cache so inference can still run.
+    """
+    cache_only_mode = os.environ.get("MEGHDOOT_USE_CACHED_PROCESSED_ONLY", "0") == "1"
+    if not cache_only_mode:
+        raw_files = download_latest_frames(cfg, n_frames=n_frames)
+        if raw_files:
+            processed_files = preprocess_frames(cfg, raw_files)
+            if processed_files:
+                return sorted(processed_files)
+            log.warning("Preprocessing fresh raw frames failed; falling back to cache")
+        else:
+            log.warning("Fresh MOSDAC frames unavailable; falling back to cached processed frames")
+    else:
+        log.warning("MEGHDOOT_USE_CACHED_PROCESSED_ONLY=1: skipping MOSDAC download")
+
+    cached_files = get_cached_processed_frames(cfg, n_frames=n_frames)
+    if cached_files:
+        log.info("Using %s cached processed frame(s) for forecast fallback", len(cached_files))
+        return sorted(cached_files)
+
+    gcs_cached_files = get_processed_frames_from_gcs(cfg, n_frames=n_frames)
+    if gcs_cached_files:
+        return sorted(gcs_cached_files)
+
+    log.error("No local or GCS cached processed frames available for fallback")
+    return None
 
 
 def generate_forecast_sequence(
@@ -404,16 +547,10 @@ def main() -> int:
     
     t_start = time.time()
     
-    # Step 1: Download
-    raw_files = download_latest_frames(cfg)
-    if not raw_files:
-        log.error("Pipeline failed at download step")
-        return 1
-    
-    # Step 2: Preprocess
-    processed_files = preprocess_frames(cfg, raw_files)
+    # Step 1+2: Resolve history tensors (download+preprocess with cache fallback)
+    processed_files = prepare_history_frames(cfg, n_frames=3)
     if not processed_files:
-        log.error("Pipeline failed at preprocessing step")
+        log.error("Pipeline failed to resolve history frames")
         return 1
     
     # Step 3: Load models

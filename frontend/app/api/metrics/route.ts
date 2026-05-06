@@ -9,23 +9,28 @@ type MetricsPayload = {
 };
 
 export async function GET() {
-  try {
-    const metricsPath = path.resolve(
-      process.cwd(),
-      "..",
-      "src",
-      "meghdoot",
-      "evaluation",
-      "metrics.json",
-    );
-    const raw = await fs.readFile(metricsPath, "utf-8");
-    const parsed = JSON.parse(raw) as MetricsPayload;
+  const candidatePaths = [
+    path.resolve(process.cwd(), "public", "metrics.json"),
+    path.resolve(process.cwd(), "..", "src", "meghdoot", "evaluation", "metrics.json"),
+  ];
 
-    return NextResponse.json(parsed, {
-      headers: {
-        "Cache-Control": "public, max-age=60",
-      },
-    });
+  try {
+    for (const metricsPath of candidatePaths) {
+      try {
+        const raw = await fs.readFile(metricsPath, "utf-8");
+        const parsed = JSON.parse(raw) as MetricsPayload;
+
+        return NextResponse.json(parsed, {
+          headers: {
+            "Cache-Control": "public, max-age=60",
+          },
+        });
+      } catch {
+        // Try next local candidate path.
+      }
+    }
+
+    throw new Error("No local metrics file available in known locations");
   } catch (error) {
     // If local metrics file isn't available in the deployed frontend image,
     // fall back to fetching from the GCS bucket so the frontend can still show metrics.
