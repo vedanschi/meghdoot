@@ -31,7 +31,8 @@ export async function GET(
   context: { params: { filename: string } },
 ) {
   const { filename } = context.params;
-  if (!filename.startsWith("forecast_step_") || !filename.endsWith(".png")) {
+  const allowedName = filename === "current.png" || (filename.startsWith("forecast_step_") && filename.endsWith(".png"));
+  if (!allowedName) {
     return NextResponse.json({ error: "Unknown forecast artifact" }, { status: 404 });
   }
 

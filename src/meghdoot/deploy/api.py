@@ -19,6 +19,7 @@ Usage
 from __future__ import annotations
 
 import io
+import os
 import time
 from pathlib import Path
 
@@ -362,6 +363,16 @@ async def forecast_nowcast(num_steps: int = 6):
                 diffusion = _state["diffusion"]
                 device = _state["device"]
 
+                min_steps = int(os.environ.get("MEGHDOOT_MIN_FORECAST_STEPS", "6"))
+                effective_steps = max(num_steps, min_steps)
+                if effective_steps != num_steps:
+                    log.warning(
+                        "Background run %s: requested num_steps=%s; enforcing min=%s",
+                        run_id,
+                        num_steps,
+                        min_steps,
+                    )
+
                 t0 = time.time()
 
                 # Step 1: Download fresh satellite data (MOSDAC-first, cache fallback)
@@ -382,17 +393,18 @@ async def forecast_nowcast(num_steps: int = 6):
                         return
 
                 # Step 3: Generate forecast
-                log.info("Background run %s: Step 3 - Generating forecast (%d steps)...", run_id, num_steps)
-                forecast_frames = generate_forecast_sequence(
-                    cfg, vae, diffusion, processed_files, num_steps=num_steps, device=device
+                log.info("Background run %s: Step 3 - Generating forecast (%d steps)...", run_id, effective_steps)
+                forecast_result = generate_forecast_sequence(
+                    cfg, vae, diffusion, processed_files, num_steps=effective_steps, device=device
                 )
-                if forecast_frames is None:
+                if forecast_result is None:
                     log.error("Background run %s: inference failed", run_id)
                     return
+                forecast_frames, current_observation = forecast_result
 
                 # Step 4: Publish to bucket
                 log.info("Background run %s: Step 4 - Publishing forecast...", run_id)
-                if not publish_to_bucket(cfg, forecast_frames):
+                if not publish_to_bucket(cfg, forecast_frames, current_observation=current_observation):
                     log.error("Background run %s: publishing failed", run_id)
                     return
 

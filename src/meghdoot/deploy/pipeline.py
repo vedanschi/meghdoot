@@ -87,6 +87,51 @@ def array_to_png_bytes(arr: np.ndarray) -> io.BytesIO:
     return buf
 
 
+def build_georeference_metadata(cfg: dict) -> dict[str, Any]:
+    """Build the geographic contract for published forecast artifacts."""
+    data_cfg = cfg.get("data", {})
+    region = data_cfg.get("region", {})
+    crop_size = data_cfg.get("crop_size", [512, 512])
+
+    lat_min = float(region.get("lat_min", 6.0))
+    lat_max = float(region.get("lat_max", 38.0))
+    lon_min = float(region.get("lon_min", 66.0))
+    lon_max = float(region.get("lon_max", 100.0))
+
+    width = max(int(crop_size[1]), 1)
+    height = max(int(crop_size[0]), 1)
+
+    return {
+        "name": region.get("name", "india"),
+        "crs": "EPSG:4326",
+        "bbox": {
+            "west": lon_min,
+            "south": lat_min,
+            "east": lon_max,
+            "north": lat_max,
+        },
+        "center": {
+            "lat": (lat_min + lat_max) / 2.0,
+            "lon": (lon_min + lon_max) / 2.0,
+        },
+        "crop_size": {
+            "width": width,
+            "height": height,
+        },
+        "pixel_size_degrees": {
+            "lon": (lon_max - lon_min) / width,
+            "lat": (lat_max - lat_min) / height,
+        },
+        "source": {
+            "region_name": region.get("name", "india"),
+            "lat_min": lat_min,
+            "lat_max": lat_max,
+            "lon_min": lon_min,
+            "lon_max": lon_max,
+        },
+    }
+
+
 def download_latest_frames(
     cfg: dict,
     n_frames: int = 3,
@@ -569,7 +614,7 @@ def generate_forecast_sequence(
     processed_files: list[Path],
     num_steps: int = 6,
     device: Optional[torch.device] = None,
-) -> Optional[list[np.ndarray]]:
+) -> Optional[tuple[list[np.ndarray], np.ndarray]]:
     """Generate multi-step forecast via recursive rollout.
     
     Parameters
@@ -589,8 +634,8 @@ def generate_forecast_sequence(
     
     Returns
     -------
-    list[np.ndarray] or None
-        List of predicted frames (pixel space), or None if failed
+    tuple[list[np.ndarray], np.ndarray] or None
+        Forecast frames and latest observed frame (pixel space), or None if failed
     """
     if device is None:
         device = get_device(cfg["project"].get("device", "cuda"))
@@ -642,6 +687,9 @@ def generate_forecast_sequence(
                 len(history_tensors),
             )
             history_tensors.extend(history_tensors[-1].clone() for _ in range(missing))
+
+        # Save latest observed frame (TIR1) for frontend "Now" rendering.
+        current_observation = history_tensors[-1][0].detach().cpu().numpy()
         
         # Stack into [1, 3, 2, H, W]
         history_pixel = torch.stack(history_tensors).unsqueeze(0).to(device)  # [1, 3, 2, H, W]
@@ -732,7 +780,7 @@ def generate_forecast_sequence(
                 current_history = new_history
         
         log.info(f"Generated {len(forecast_frames)} forecast frames ✓")
-        return forecast_frames
+        return forecast_frames, current_observation
         
     except Exception as e:
         log.error(f"Forecast generation failed: {e}")
@@ -743,6 +791,7 @@ def publish_to_bucket(
     cfg: dict,
     forecast_frames: list[np.ndarray],
     observation_time: Optional[datetime] = None,
+    current_observation: Optional[np.ndarray] = None,
 ) -> bool:
     """Publish forecast results to GCS bucket.
     
@@ -794,6 +843,8 @@ def publish_to_bucket(
             "num_steps": len(forecast_frames),
             "lead_times_minutes": lead_times_minutes,
             "valid_times": valid_times,
+            "has_current_observation": current_observation is not None,
+            "georeference": build_georeference_metadata(cfg),
             "model": "meghdoot-ai-diffusion",
             "inference_steps": cfg["diffusion"]["inference"].get("num_inference_steps", 50),
         }
@@ -812,6 +863,12 @@ def publish_to_bucket(
             png_bytes = array_to_png_bytes(frame)
             png_blob.upload_from_file(png_bytes, content_type="image/png")
             log.info(f"  Uploaded forecast_step_{i}.png")
+
+        if current_observation is not None:
+            current_blob = bucket.blob("forecasts/latest/current.png")
+            current_png = array_to_png_bytes(current_observation)
+            current_blob.upload_from_file(current_png, content_type="image/png")
+            log.info("  Uploaded current.png")
         
         log.info("Forecast published to bucket ✓")
         return True
@@ -875,7 +932,7 @@ def main() -> int:
     
     # Step 4: Generate forecast
     log.info("Step 4: Generating forecast sequence...")
-    forecast_frames = generate_forecast_sequence(
+    forecast_result = generate_forecast_sequence(
         cfg,
         vae,
         diffusion,
@@ -883,13 +940,14 @@ def main() -> int:
         num_steps=args.num_steps,
         device=device,
     )
-    if forecast_frames is None:
+    if forecast_result is None:
         log.error("Pipeline failed at forecast generation step")
         return 1
+    forecast_frames, current_observation = forecast_result
     
     # Step 5: Publish
     log.info("Step 5: Publishing forecast to GCS bucket...")
-    if not publish_to_bucket(cfg, forecast_frames):
+    if not publish_to_bucket(cfg, forecast_frames, current_observation=current_observation):
         log.error("Pipeline failed at publishing step")
         return 1
     
