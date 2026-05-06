@@ -7,7 +7,15 @@ type ForecastMetadata = {
   };
 };
 
+type WeatherCity = {
+  id: string;
+  label: string;
+  lat: number;
+  lon: number;
+};
+
 type WeatherPoint = {
+  id: string;
   label: string;
   lat: number;
   lon: number;
@@ -18,9 +26,16 @@ type WeatherPoint = {
   rain_probability_pct: number | null;
 };
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
+const INDIAN_CITIES: WeatherCity[] = [
+  { id: "delhi", label: "Delhi", lat: 28.6139, lon: 77.2090 },
+  { id: "mumbai", label: "Mumbai", lat: 19.0760, lon: 72.8777 },
+  { id: "kolkata", label: "Kolkata", lat: 22.5726, lon: 88.3639 },
+  { id: "chennai", label: "Chennai", lat: 13.0827, lon: 80.2707 },
+  { id: "bengaluru", label: "Bengaluru", lat: 12.9716, lon: 77.5946 },
+  { id: "hyderabad", label: "Hyderabad", lat: 17.3850, lon: 78.4867 },
+  { id: "ahmedabad", label: "Ahmedabad", lat: 23.0225, lon: 72.5714 },
+  { id: "kochi", label: "Kochi", lat: 9.9312, lon: 76.2673 },
+];
 
 async function fetchMetadata(baseUrl: string): Promise<ForecastMetadata | null> {
   try {
@@ -75,33 +90,27 @@ async function fetchOpenMeteo(lat: number, lon: number): Promise<Partial<Weather
 export async function GET(request: Request) {
   const baseUrl = new URL(request.url).origin;
   const metadata = await fetchMetadata(baseUrl);
-  const bbox = metadata?.georeference?.bbox ?? { west: 66.0, south: 6.0, east: 100.0, north: 38.0 };
   const center = metadata?.georeference?.center ?? {
-    lat: (bbox.north + bbox.south) / 2,
-    lon: (bbox.east + bbox.west) / 2,
+    lat: 22,
+    lon: 83,
   };
 
-  const points = [
-    { label: "North", lat: clamp(bbox.north - 3, bbox.south, bbox.north), lon: center.lon },
-    { label: "Center", lat: center.lat, lon: center.lon },
-    { label: "West", lat: center.lat, lon: clamp(bbox.west + 3, bbox.west, bbox.east) },
-    { label: "East", lat: center.lat, lon: clamp(bbox.east - 3, bbox.west, bbox.east) },
-    { label: "South", lat: clamp(bbox.south + 3, bbox.south, bbox.north), lon: center.lon },
-  ];
-
   try {
-    const snapshots = await Promise.all(
-      points.map(async (point) => ({
-        ...point,
-        ...(await fetchOpenMeteo(point.lat, point.lon)),
+    // Fetch weather for all Indian cities
+    const cities = await Promise.all(
+      INDIAN_CITIES.map(async (city) => ({
+        id: city.id,
+        label: city.label,
+        lat: city.lat,
+        lon: city.lon,
+        ...(await fetchOpenMeteo(city.lat, city.lon)),
       })),
     );
 
     return NextResponse.json({
       source: "open-meteo",
-      bbox,
       center,
-      snapshots,
+      cities,
     }, {
       headers: { "Cache-Control": "no-store" },
     });

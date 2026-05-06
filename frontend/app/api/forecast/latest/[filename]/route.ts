@@ -42,7 +42,17 @@ export async function GET(
 
   const backendUrl = apiOrigin ? `${apiOrigin}/forecast/latest/${filename}` : "";
   const gcsUrl = `https://storage.googleapis.com/${bucket}/${prefix}/${filename}`;
-  const candidateUrls = backendUrl ? [backendUrl, gcsUrl] : [gcsUrl];
+  let candidateUrls = backendUrl ? [backendUrl, gcsUrl] : [gcsUrl];
+  
+  // For current.png, add fallback to forecast_step_0.png
+  if (filename === "current.png") {
+    const backendFallback = apiOrigin ? `${apiOrigin}/forecast/latest/forecast_step_0.png` : "";
+    const gcsFallback = `https://storage.googleapis.com/${bucket}/${prefix}/forecast_step_0.png`;
+    if (backendFallback) {
+      candidateUrls.push(backendFallback);
+    }
+    candidateUrls.push(gcsFallback);
+  }
 
   let lastStatus: number | null = null;
   let lastError: string | null = null;

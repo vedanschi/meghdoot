@@ -21,7 +21,8 @@ type ForecastMetadata = {
   inference_steps: number;
 };
 
-type WeatherSnapshot = {
+type WeatherCity = {
+  id: string;
   label: string;
   lat: number;
   lon: number;
@@ -34,9 +35,8 @@ type WeatherSnapshot = {
 
 type WeatherSummary = {
   source: string;
-  bbox: { west: number; south: number; east: number; north: number };
   center: { lat: number; lon: number };
-  snapshots: WeatherSnapshot[];
+  cities: WeatherCity[];
 };
 
 type ModelMetrics = {
@@ -87,6 +87,7 @@ export default function Home() {
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [weatherError, setWeatherError] = useState<string | null>(null);
+  const [selectedCityId, setSelectedCityId] = useState<string | null>(null);
 
   const fetchMetadata = async () => {
     try {
@@ -184,7 +185,29 @@ export default function Home() {
     ? "/api/forecast/latest/current.png"
     : `/api/forecast/latest/forecast_step_${Math.max(selectedStep - 1, 0)}.png`;
 
-  const weatherHighlights = weather?.snapshots ?? [];
+  // Determine default selected city (nearest to forecast center by latitude)
+  const weatherHighlights = weather?.cities ?? [];
+  const defaultCityId = useMemo(() => {
+    if (!weatherHighlights.length) return null;
+    if (selectedCityId) return selectedCityId;
+    
+    const center = weather?.center;
+    if (!center) return weatherHighlights[0]?.id ?? null;
+    
+    // Find city nearest to forecast center by distance
+    let nearest = weatherHighlights[0];
+    let minDist = Infinity;
+    for (const city of weatherHighlights) {
+      const dist = Math.hypot(city.lat - center.lat, city.lon - center.lon);
+      if (dist < minDist) {
+        minDist = dist;
+        nearest = city;
+      }
+    }
+    return nearest.id;
+  }, [weatherHighlights, selectedCityId, weather?.center]);
+  
+  const selectedCity = weatherHighlights.find((c) => c.id === (selectedCityId || defaultCityId));
 
   const metricRows = [
     { key: "ssim", label: "SSIM", higherIsBetter: true },
@@ -349,7 +372,7 @@ export default function Home() {
             <section className="panel sidebar-panel">
               <div className="metrics-header">
                 <h2>Weather Snapshot</h2>
-                <p>Regional wind, humidity, and rainfall from Open-Meteo</p>
+                <p>Real-time city weather from Open-Meteo</p>
               </div>
               {weatherError ? (
                 <div className="placeholder error">
@@ -359,23 +382,34 @@ export default function Home() {
               ) : !weather ? (
                 <div className="placeholder">Loading weather summary...</div>
               ) : (
-                <div className="weather-grid">
-                  {weatherHighlights.map((point) => (
-                    <article className="weather-card" key={point.label}>
-                      <div className="weather-card-top">
-                        <strong>{point.label}</strong>
-                        <span>{point.lat.toFixed(1)}N, {point.lon.toFixed(1)}E</span>
-                      </div>
-                      <div className="weather-values">
-                        <div><span>Temp</span><strong>{point.temperature_c ?? "-"}°C</strong></div>
-                        <div><span>Humidity</span><strong>{point.humidity_pct ?? "-"}%</strong></div>
-                        <div><span>Wind</span><strong>{point.wind_kph ?? "-"} kph</strong></div>
-                        <div><span>Rain</span><strong>{point.rain_mm ?? "-"} mm</strong></div>
-                      </div>
-                      <small>Rain chance: {point.rain_probability_pct ?? "-"}%</small>
-                    </article>
+                <div className="weather-selector-container">
+                <select
+                  className="weather-city-selector"
+                  value={selectedCityId || defaultCityId || ""}
+                  onChange={(e) => setSelectedCityId(e.target.value || null)}
+                >
+                  {weatherHighlights.map((city) => (
+                    <option key={city.id} value={city.id}>
+                      {city.label}
+                    </option>
                   ))}
-                </div>
+                </select>
+                {selectedCity && (
+                  <article className="weather-card weather-card-selected">
+                    <div className="weather-card-top">
+                      <strong>{selectedCity.label}</strong>
+                      <span>{selectedCity.lat.toFixed(2)}N, {selectedCity.lon.toFixed(2)}E</span>
+                    </div>
+                    <div className="weather-values">
+                      <div><span>Temp</span><strong>{selectedCity.temperature_c ?? "-"}°C</strong></div>
+                      <div><span>Humidity</span><strong>{selectedCity.humidity_pct ?? "-"}%</strong></div>
+                      <div><span>Wind</span><strong>{selectedCity.wind_kph ?? "-"} kph</strong></div>
+                      <div><span>Rain</span><strong>{selectedCity.rain_mm ?? "-"} mm</strong></div>
+                    </div>
+                    <small>Rain chance: {selectedCity.rain_probability_pct ?? "-"}%</small>
+                  </article>
+                )}
+              </div>
               )}
             </section>
 

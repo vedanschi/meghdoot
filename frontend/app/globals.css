@@ -386,11 +386,43 @@ h1 {
   gap: 0.65rem;
 }
 
+.weather-selector-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.weather-city-selector {
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: rgba(255, 255, 255, 0.85);
+  font-size: 0.9rem;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.weather-city-selector:hover {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: var(--accent, #0ea5e9);
+}
+
+.weather-city-selector:focus {
+  outline: 2px solid var(--accent, #0ea5e9);
+  outline-offset: 2px;
+}
+
 .weather-card {
   border: 1px solid var(--line);
   border-radius: 0.85rem;
   padding: 0.75rem;
   background: rgba(255, 255, 255, 0.78);
+}
+
+.weather-card-selected {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: var(--accent, #0ea5e9);
 }
 
 .weather-card-top {

@@ -864,11 +864,18 @@ def publish_to_bucket(
             png_blob.upload_from_file(png_bytes, content_type="image/png")
             log.info(f"  Uploaded forecast_step_{i}.png")
 
+        # Always upload current.png (either from current_observation or forecast_step_0)
         if current_observation is not None:
             current_blob = bucket.blob("forecasts/latest/current.png")
             current_png = array_to_png_bytes(current_observation)
             current_blob.upload_from_file(current_png, content_type="image/png")
-            log.info("  Uploaded current.png")
+            log.info("  Uploaded current.png from observation")
+        else:
+            # Fallback: use first forecast frame as current.png
+            current_blob = bucket.blob("forecasts/latest/current.png")
+            current_png = array_to_png_bytes(forecast_frames[0])
+            current_blob.upload_from_file(current_png, content_type="image/png")
+            log.info("  Uploaded current.png from forecast_step_0 (fallback)")
         
         log.info("Forecast published to bucket ✓")
         return True
