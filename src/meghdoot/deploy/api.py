@@ -400,11 +400,11 @@ async def forecast_nowcast(num_steps: int = 6):
                 if forecast_result is None:
                     log.error("Background run %s: inference failed", run_id)
                     return
-                forecast_frames, current_observation = forecast_result
+                forecast_frames, current_observation, forecast_latents = forecast_result
 
                 # Step 4: Publish to bucket
                 log.info("Background run %s: Step 4 - Publishing forecast...", run_id)
-                if not publish_to_bucket(cfg, forecast_frames, current_observation=current_observation):
+                if not publish_to_bucket(cfg, forecast_frames, current_observation=current_observation, forecast_latents=forecast_latents):
                     log.error("Background run %s: publishing failed", run_id)
                     return
 

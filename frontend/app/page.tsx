@@ -296,6 +296,11 @@ export default function Home() {
                   <div className="map-frame-label map-west">{westLabel}</div>
                   <div className="map-frame-label map-east">{eastLabel}</div>
                   <img src={frameUrl} alt={`Forecast lead ${selectedLead} minutes`} className="forecast-image" />
+                  <svg className="india-border-overlay" viewBox="0 0 512 512" preserveAspectRatio="none" aria-hidden="true">
+                    {/* Simplified India border outline - drawn as SVG path scaled to 512x512 pixel image space */}
+                    <path d="M 100,80 L 120,60 L 140,70 L 150,50 L 170,55 L 180,40 L 200,45 L 210,30 L 220,35 L 240,25 L 250,35 L 260,30 L 270,40 L 280,35 L 290,50 L 300,45 L 310,60 L 320,55 L 330,70 L 340,65 L 350,80 L 355,100 L 360,120 L 362,140 L 360,160 L 355,180 L 350,200 L 340,215 L 330,220 L 320,225 L 310,230 L 300,235 L 290,240 L 280,242 L 270,240 L 260,238 L 250,240 L 240,242 L 230,245 L 220,248 L 210,250 L 200,252 L 190,255 L 180,260 L 170,265 L 160,270 L 150,275 L 140,278 L 130,280 L 120,278 L 110,275 L 100,270 L 95,260 L 92,250 L 90,240 L 88,230 L 87,220 L 86,210 L 85,200 L 84,190 L 83,180 L 82,170 L 81,160 L 80,150 L 80,140 L 80,130 L 80,120 L 80,110 L 82,100 L 90,85 Z" 
+                    className="india-border" />
+                  </svg>
                   <div className="map-grid" aria-hidden="true" />
                   <div className="image-caption">
                     <strong>{selectedStep === 0 ? "Now" : `+${selectedLead} min`}</strong>

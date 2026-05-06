@@ -730,6 +730,7 @@ def generate_forecast_sequence(
         
         # Generate forecast sequence
         forecast_frames = []
+        forecast_latents = []  # Track latent predictions for archival
         current_history = history_latent.clone()
         
         num_inference_steps = cfg["diffusion"]["inference"].get("num_inference_steps", 50)
@@ -745,6 +746,9 @@ def generate_forecast_sequence(
                     guidance_scale=1.0,
                 )  # [1, 4, 64, 64]
                 log.debug(f"Sampled latent for step {step + 1}: shape={pred_latent.shape}, dtype={pred_latent.dtype}")
+                
+                # Archive the latent prediction
+                forecast_latents.append(pred_latent.cpu().clone())
                 
                 if pred_latent.ndim != 4:
                     raise ValueError(f"Expected sampled latent to be 4D [B, C, H, W], got {pred_latent.shape}")
@@ -780,7 +784,7 @@ def generate_forecast_sequence(
                 current_history = new_history
         
         log.info(f"Generated {len(forecast_frames)} forecast frames ✓")
-        return forecast_frames, current_observation
+        return forecast_frames, current_observation, forecast_latents
         
     except Exception as e:
         log.error(f"Forecast generation failed: {e}")
@@ -792,6 +796,7 @@ def publish_to_bucket(
     forecast_frames: list[np.ndarray],
     observation_time: Optional[datetime] = None,
     current_observation: Optional[np.ndarray] = None,
+    forecast_latents: Optional[list] = None,
 ) -> bool:
     """Publish forecast results to GCS bucket.
     
@@ -803,6 +808,10 @@ def publish_to_bucket(
         List of predicted frames (pixel space)
     observation_time : datetime
         Time of observation; defaults to now
+    current_observation : np.ndarray, optional
+        Current observation frame (pixel space)
+    forecast_latents : list, optional
+        List of latent predictions from diffusion model for archival
     
     Returns
     -------
@@ -877,6 +886,22 @@ def publish_to_bucket(
             current_blob.upload_from_file(current_png, content_type="image/png")
             log.info("  Uploaded current.png from forecast_step_0 (fallback)")
         
+        # Archive diffusion latent predictions for potential reuse/analysis
+        if forecast_latents:
+            archive_path = f"forecasts/latest/predictions_archive/{observation_time.isoformat().replace(':', '-')}"
+            for i, latent in enumerate(forecast_latents):
+                try:
+                    # Save each latent prediction as PyTorch tensor
+                    latent_blob = bucket.blob(f"{archive_path}/latent_step_{i}.pt")
+                    latent_bytes = io.BytesIO()
+                    torch.save(latent.cpu(), latent_bytes)
+                    latent_bytes.seek(0)
+                    latent_blob.upload_from_file(latent_bytes, content_type="application/octet-stream")
+                    log.debug(f"  Archived latent prediction {i}")
+                except Exception as e:
+                    log.warning(f"  Failed to archive latent {i}: {e}")
+            log.info(f"  Archived {len(forecast_latents)} latent predictions to {archive_path}")
+        
         log.info("Forecast published to bucket ✓")
         return True
         
@@ -950,11 +975,16 @@ def main() -> int:
     if forecast_result is None:
         log.error("Pipeline failed at forecast generation step")
         return 1
-    forecast_frames, current_observation = forecast_result
+    forecast_frames, current_observation, forecast_latents = forecast_result
     
     # Step 5: Publish
     log.info("Step 5: Publishing forecast to GCS bucket...")
-    if not publish_to_bucket(cfg, forecast_frames, current_observation=current_observation):
+    if not publish_to_bucket(
+        cfg,
+        forecast_frames,
+        current_observation=current_observation,
+        forecast_latents=forecast_latents,
+    ):
         log.error("Pipeline failed at publishing step")
         return 1
     
