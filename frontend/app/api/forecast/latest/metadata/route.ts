@@ -4,6 +4,28 @@ function trimSlashes(value: string): string {
   return value.replace(/^\/+|\/+$/g, "");
 }
 
+async function getIdentityToken(audience: string): Promise<string | null> {
+  try {
+    const url = new URL(
+      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity",
+    );
+    url.searchParams.set("audience", audience);
+    url.searchParams.set("format", "full");
+
+    const response = await fetch(url, {
+      headers: { "Metadata-Flavor": "Google" },
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return null;
+    }
+
+    return await response.text();
+  } catch {
+    return null;
+  }
+}
+
 export async function GET() {
   const bucket = process.env.NEXT_PUBLIC_GCS_BUCKET || "meghdoot-satellite-data";
   const prefix = trimSlashes(process.env.NEXT_PUBLIC_FORECAST_PREFIX || "forecasts/latest");
@@ -18,7 +40,15 @@ export async function GET() {
 
   for (const targetUrl of candidateUrls) {
     try {
-      const resp = await fetch(targetUrl, { cache: "no-store" });
+      const headers: Record<string, string> = {};
+      if (targetUrl === backendUrl && apiOrigin) {
+        const token = await getIdentityToken(apiOrigin);
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        }
+      }
+
+      const resp = await fetch(targetUrl, { cache: "no-store", headers });
       if (!resp.ok) {
         lastStatus = resp.status;
         lastError = `Metadata fetch failed with ${resp.status}`;
