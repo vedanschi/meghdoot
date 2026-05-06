@@ -382,11 +382,14 @@ def generate_forecast_sequence(
         history_tensors = []
         for fp in sorted(processed_files)[-3:]:
             t = torch.load(fp, map_location=device)  # [2, H, W]
+            log.debug(f"Loaded tensor from {fp.name}: shape={t.shape}, dtype={t.dtype}, device={t.device}")
             history_tensors.append(t)
         
         if not history_tensors:
             log.error("Need at least 1 history frame, got 0")
             return None
+
+        log.debug(f"Loaded {len(history_tensors)} history tensors. Shapes: {[t.shape for t in history_tensors]}")
 
         if len(history_tensors) < 3:
             missing = 3 - len(history_tensors)
@@ -398,15 +401,29 @@ def generate_forecast_sequence(
         
         # Stack into [1, 3, 2, H, W]
         history_pixel = torch.stack(history_tensors).unsqueeze(0).to(device)  # [1, 3, 2, H, W]
+        log.debug(f"Stacked history_pixel shape: {history_pixel.shape}")
         
         # Encode to latent [1, 3, 4, 64, 64]
         with torch.no_grad():
             history_latent_list = []
             for i in range(3):
                 frame = history_pixel[:, i]  # [1, 2, H, W]
-                z = vae.encode(frame)  # [1, 4, 64, 64]
-                history_latent_list.append(z)
-            history_latent = torch.cat(history_latent_list, dim=0).unsqueeze(0)  # [1, 3, 4, 64, 64]
+                log.debug(f"Encoding frame {i}: shape={frame.shape}, device={frame.device}")
+                try:
+                    z = vae.encode(frame)  # [1, 4, 64, 64]
+                    log.debug(f"Encoded frame {i}: shape={z.shape}")
+                    history_latent_list.append(z)
+                except Exception as e:
+                    log.error(f"Failed to encode frame {i}: {e}")
+                    raise
+            
+            log.debug(f"Before cat: {len(history_latent_list)} latents, shapes: {[z.shape for z in history_latent_list]}")
+            try:
+                history_latent = torch.cat(history_latent_list, dim=0).unsqueeze(0)  # [1, 3, 4, 64, 64]
+                log.debug(f"history_latent after cat+unsqueeze: {history_latent.shape}")
+            except Exception as e:
+                log.error(f"Failed to concatenate latents: {e}. Shapes: {[z.shape for z in history_latent_list]}")
+                raise
         
         # Generate forecast sequence
         forecast_frames = []
