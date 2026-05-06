@@ -450,53 +450,115 @@ def get_processed_frames_from_gcs(
     return sorted(downloaded)
 
 
+def download_forecast_data(
+    cfg: dict,
+    n_frames: int = 3,
+) -> Optional[list[Path]]:
+    """Download fresh satellite data for forecast.
+    
+    Prioritization order (MOSDAC first, cache fallback only):
+    1. Fresh MOSDAC download (if not in cache-only mode)
+    2. GCS raw cache (if MOSDAC fails)
+    3. Local raw cache (if GCS fails)
+    
+    Returns
+    -------
+    list[Path] or None
+        Raw file paths from whichever source succeeded
+    """
+    cache_only_mode = os.environ.get("MEGHDOOT_USE_CACHED_PROCESSED_ONLY", "0") == "1"
+    
+    # Try fresh MOSDAC download FIRST unless cache-only mode
+    if not cache_only_mode:
+        fresh_raw_files = download_latest_frames(cfg, n_frames=n_frames)
+        if fresh_raw_files:
+            log.info(
+                "✓ Download successful: acquired %s fresh frame(s) from MOSDAC",
+                len(fresh_raw_files),
+            )
+            # Mirror to GCS for future cache fallback
+            upload_raw_frames_to_gcs(cfg, fresh_raw_files)
+            return fresh_raw_files
+        log.warning("MOSDAC download failed; attempting cache fallback...")
+    else:
+        log.info("Cache-only mode enabled: skipping MOSDAC download")
+    
+    # Fallback 1: Try GCS cache
+    gcs_raw_files = get_raw_frames_from_gcs(cfg, n_frames=n_frames)
+    if gcs_raw_files:
+        log.info(
+            "⊝ Download fallback (GCS): using %s cached raw frame(s) from GCS",
+            len(gcs_raw_files),
+        )
+        return gcs_raw_files
+    
+    # Fallback 2: Try local cache
+    local_raw_files = get_cached_raw_frames(cfg, n_frames=n_frames)
+    if local_raw_files:
+        log.warning(
+            "⊝ Download fallback (local): using %s cached raw frame(s) from local disk",
+            len(local_raw_files),
+        )
+        return local_raw_files
+    
+    log.error("All download attempts failed (MOSDAC, GCS, local cache)")
+    return None
+
+
 def prepare_history_frames(
     cfg: dict,
     n_frames: int = 3,
 ) -> Optional[list[Path]]:
-    """Resolve history tensors with download-first, cache-fallback behavior.
-
-    The function tries fresh MOSDAC download + preprocess first. If that fails
-    (including auth/network errors), it falls back to existing processed tensors
-    in local cache so inference can still run.
+    """Preprocess raw files or use cached processed tensors for inference.
+    
+    This function handles preprocessing raw files to tensors, with fallback
+    to cached processed tensors if preprocessing fails. Raw data download
+    is handled by download_forecast_data() separately.
+    
+    Parameters
+    ----------
+    cfg : dict
+        Meghdoot config
+    n_frames : int
+        Number of frames to use
+    
+    Returns
+    -------
+    list[Path] or None
+        Paths to processed tensor files, or None if all methods fail
     """
-    cache_only_mode = os.environ.get("MEGHDOOT_USE_CACHED_PROCESSED_ONLY", "0") == "1"
-
-    raw_files = get_cached_raw_frames(cfg, n_frames=n_frames)
-    if raw_files:
-        log.info("Using %s cached raw frame(s) from local disk", len(raw_files))
-
-    if not raw_files:
-        raw_files = get_raw_frames_from_gcs(cfg, n_frames=n_frames)
-        if raw_files:
-            log.info("Using %s cached raw frame(s) from GCS fallback", len(raw_files))
-
-    if not raw_files and not cache_only_mode:
-        fresh_raw_files = download_latest_frames(cfg, n_frames=n_frames)
-        if fresh_raw_files:
-            upload_raw_frames_to_gcs(cfg, fresh_raw_files)
-            raw_files = fresh_raw_files
-        else:
-            log.warning("Fresh MOSDAC frames unavailable; falling back to cached processed frames")
-    elif not raw_files:
-        log.warning("MEGHDOOT_USE_CACHED_PROCESSED_ONLY=1: skipping MOSDAC download")
-
-    if raw_files:
-        processed_files = preprocess_frames(cfg, raw_files)
-        if processed_files:
-            return sorted(processed_files)
-        log.warning("Preprocessing raw frames failed; falling back to processed cache")
-
-    cached_files = get_cached_processed_frames(cfg, n_frames=n_frames)
-    if cached_files:
-        log.info("Using %s cached processed frame(s) for forecast fallback", len(cached_files))
-        return sorted(cached_files)
-
-    gcs_cached_files = get_processed_frames_from_gcs(cfg, n_frames=n_frames)
-    if gcs_cached_files:
-        return sorted(gcs_cached_files)
-
-    log.error("No local or GCS cached processed frames available for fallback")
+    # Raw files should be provided from download_forecast_data()
+    raw_files = None
+    
+    # Try preprocessing: first check if any raw files exist locally
+    cached_raw = get_cached_raw_frames(cfg, n_frames=n_frames)
+    if cached_raw:
+        log.info("Attempting to preprocess %s local raw file(s)...", len(cached_raw))
+        processed = preprocess_frames(cfg, cached_raw)
+        if processed:
+            log.info("✓ Preprocessing successful: %s tensor(s)", len(processed))
+            return sorted(processed)
+        log.warning("Preprocessing failed; attempting cached processed tensors...")
+    
+    # Fallback to cached processed tensors (local)
+    cached_processed = get_cached_processed_frames(cfg, n_frames=n_frames)
+    if cached_processed:
+        log.warning(
+            "⊝ Using %s cached processed frame(s) from local disk (stale data)",
+            len(cached_processed),
+        )
+        return sorted(cached_processed)
+    
+    # Final fallback: GCS processed cache
+    gcs_processed = get_processed_frames_from_gcs(cfg, n_frames=n_frames)
+    if gcs_processed:
+        log.warning(
+            "⊝ Using %s cached processed frame(s) from GCS (stale data)",
+            len(gcs_processed),
+        )
+        return sorted(gcs_processed)
+    
+    log.error("No processed frames available (local or GCS cache)")
     return None
 
 
@@ -633,21 +695,40 @@ def generate_forecast_sequence(
                     current_history,
                     num_inference_steps=num_inference_steps,
                     guidance_scale=1.0,
-                )  # [1, 1, 4, 64, 64]
+                )  # [1, 4, 64, 64]
+                log.debug(f"Sampled latent for step {step + 1}: shape={pred_latent.shape}, dtype={pred_latent.dtype}")
+                
+                if pred_latent.ndim != 4:
+                    raise ValueError(f"Expected sampled latent to be 4D [B, C, H, W], got {pred_latent.shape}")
                 
                 # Decode to pixel space
-                pred_pixel = vae.decode(pred_latent)  # [1, 1, 2, H, W]
-                pred_np = pred_pixel[0, 0].cpu().numpy()  # [2, H, W]
+                pred_pixel = vae.decode(pred_latent)  # [1, 2, H, W]
+                pred_np = pred_pixel[0].cpu().numpy()  # [2, H, W]
                 
                 # Take TIR1 channel (first channel)
                 forecast_frames.append(pred_np[0])  # [H, W]
                 
                 # Update history: remove oldest, add new prediction
                 # Shift: keep frames 1, 2 and add prediction as new frame 2
-                new_history = torch.cat([
-                    current_history[:, 1:, :, :, :],  # [1, 2, 4, 64, 64]
-                    pred_latent,  # [1, 1, 4, 64, 64]
-                ], dim=1)  # [1, 3, 4, 64, 64]
+                # pred_latent is [1, 4, 64, 64]; unsqueeze(1) → [1, 1, 4, 64, 64]
+                # Concatenate along dim=1 with history[:, 1:] [1, 2, 4, 64, 64]
+                # Result: [1, 3, 4, 64, 64]
+                try:
+                    new_history = torch.cat(
+                        [
+                            current_history[:, 1:, :, :, :],  # [1, 2, 4, 64, 64]
+                            pred_latent.unsqueeze(1),  # [1, 1, 4, 64, 64]
+                        ],
+                        dim=1,
+                    )  # [1, 3, 4, 64, 64]
+                    log.debug(f"Updated history for step {step + 1}: shape={new_history.shape}")
+                except RuntimeError as e:
+                    log.error(
+                        f"Failed to concatenate history tensors at step {step + 1}: "
+                        f"current_history[:, 1:] shape={current_history[:, 1:, :, :, :].shape}, "
+                        f"pred_latent.unsqueeze(1) shape={pred_latent.unsqueeze(1).shape}, error={e}"
+                    )
+                    raise
                 current_history = new_history
         
         log.info(f"Generated {len(forecast_frames)} forecast frames ✓")
@@ -757,15 +838,26 @@ def main() -> int:
     
     t_start = time.time()
     
-    # Step 1+2: Resolve history tensors (download+preprocess with cache fallback)
-    processed_files = prepare_history_frames(cfg, n_frames=3)
-    if not processed_files:
-        log.error("Pipeline failed to resolve history frames")
+    # Step 1: Download fresh satellite data (MOSDAC-first, cache fallback)
+    log.info("Step 1: Acquiring forecast data...")
+    raw_files = download_forecast_data(cfg, n_frames=3)
+    if not raw_files:
+        log.error("Pipeline failed to acquire any satellite data")
         return 1
+    
+    # Step 1b: Preprocess raw files to tensors (with cache fallback if preprocessing fails)
+    log.info("Step 2: Preprocessing to tensors...")
+    processed_files = preprocess_frames(cfg, raw_files)
+    if not processed_files:
+        log.warning("Preprocessing failed; attempting cached processed frames...")
+        processed_files = prepare_history_frames(cfg, n_frames=3)
+        if not processed_files:
+            log.error("Pipeline failed to obtain processed tensor frames")
+            return 1
     
     # Step 3: Load models
     try:
-        log.info("Loading VAE and Diffusion models...")
+        log.info("Step 3: Loading VAE and Diffusion models...")
         vae = SatelliteVAE(cfg).to(device).eval()
         vae_ckpt_path = ensure_vae_checkpoint(cfg)
         if vae_ckpt_path is not None:
@@ -782,6 +874,7 @@ def main() -> int:
         return 1
     
     # Step 4: Generate forecast
+    log.info("Step 4: Generating forecast sequence...")
     forecast_frames = generate_forecast_sequence(
         cfg,
         vae,
@@ -795,13 +888,15 @@ def main() -> int:
         return 1
     
     # Step 5: Publish
+    log.info("Step 5: Publishing forecast to GCS bucket...")
     if not publish_to_bucket(cfg, forecast_frames):
         log.error("Pipeline failed at publishing step")
         return 1
     
     elapsed = time.time() - t_start
     log.info("="*80)
-    log.info(f"Pipeline completed successfully in {elapsed:.1f}s")
+    log.info(f"✓ Pipeline completed successfully in {elapsed:.1f}s")
+    log.info(f"  Data source: {raw_files[0].parent.parent if raw_files else 'unknown'}")
     log.info("="*80)
     return 0
 
