@@ -8,8 +8,8 @@
 
   "search_parameters": {
     "datasetId": "3SIMG_L1C_SGP",
-    "startTime": "2026-05-01",
-    "endTime": "2026-05-04",
+    "startTime": "",
+    "endTime": "",
     "count": "",
     "boundingBox": "66.0,6.0,100.0,38.0",
     "gId": ""
