@@ -9,29 +9,41 @@ export async function GET() {
   const prefix = trimSlashes(process.env.NEXT_PUBLIC_FORECAST_PREFIX || "forecasts/latest");
   const apiOrigin = (process.env.API_ORIGIN || process.env.NEXT_PUBLIC_API_ORIGIN || "").replace(/\/$/, "");
 
-  const targetUrl = apiOrigin
-    ? `${apiOrigin}/forecast/latest/metadata.json`
-    : `https://storage.googleapis.com/${bucket}/${prefix}/metadata.json`;
+  const backendUrl = apiOrigin ? `${apiOrigin}/forecast/latest/metadata.json` : "";
+  const gcsUrl = `https://storage.googleapis.com/${bucket}/${prefix}/metadata.json`;
+  const candidateUrls = backendUrl ? [backendUrl, gcsUrl] : [gcsUrl];
 
-  try {
-    const resp = await fetch(targetUrl, { cache: "no-store" });
-    if (!resp.ok) {
-      return NextResponse.json(
-        { error: `Metadata fetch failed with ${resp.status}`, targetUrl },
-        { status: 502 },
-      );
+  let lastStatus: number | null = null;
+  let lastError: string | null = null;
+
+  for (const targetUrl of candidateUrls) {
+    try {
+      const resp = await fetch(targetUrl, { cache: "no-store" });
+      if (!resp.ok) {
+        lastStatus = resp.status;
+        lastError = `Metadata fetch failed with ${resp.status}`;
+        continue;
+      }
+
+      const raw = await resp.text();
+      return new NextResponse(raw, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        },
+      });
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Unknown metadata proxy error";
     }
-
-    const raw = await resp.text();
-    return new NextResponse(raw, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Cache-Control": "no-store",
-      },
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown metadata proxy error";
-    return NextResponse.json({ error: message, targetUrl }, { status: 500 });
   }
+
+  return NextResponse.json(
+    {
+      error: lastError || "Unable to fetch metadata",
+      status: lastStatus,
+      attempted: candidateUrls,
+    },
+    { status: 502 },
+  );
 }
