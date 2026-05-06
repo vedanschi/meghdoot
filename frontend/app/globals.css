@@ -262,24 +262,6 @@ h1 {
   object-fit: cover;
 }
 
-.india-border-overlay {
-  position: absolute;
-  inset: 1.1rem;
-  width: calc(100% - 2.2rem);
-  height: calc(100% - 4.3rem);
-  pointer-events: none;
-  z-index: 1;
-}
-
-.india-border {
-  fill: none;
-  stroke: rgba(244, 175, 61, 0.6);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  filter: drop-shadow(0 0 2px rgba(17, 121, 100, 0.5));
-}
-
 .image-caption {
   display: flex;
   justify-content: space-between;

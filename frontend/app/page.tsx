@@ -209,67 +209,7 @@ export default function Home() {
   
   const selectedCity = weatherHighlights.find((c) => c.id === (selectedCityId || defaultCityId));
 
-  const [indiaGeo, setIndiaGeo] = useState<any | null>(null);
-  useEffect(() => {
-    // Load simplified India GeoJSON from public folder
-    fetch("/india.geojson", { cache: "no-store" })
-      .then((r) => r.ok ? r.json() : null)
-      .then((g) => setIndiaGeo(g))
-      .catch(() => setIndiaGeo(null));
-  }, []);
-
-  const indiaSvg = useMemo(() => {
-    if (!indiaGeo || !metadata?.georeference) return null;
-    const geo = metadata.georeference;
-    const bbox = geo.bbox ?? { west: 66, south: 6, east: 100, north: 38 };
-    const width = geo.crop_size?.width ?? 512;
-    const height = geo.crop_size?.height ?? 512;
-
-    const proj = (lon: number, lat: number) => {
-      const x = ((lon - bbox.west) / (bbox.east - bbox.west)) * width;
-      const y = ((bbox.north - lat) / (bbox.north - bbox.south)) * height;
-      return [x, y];
-    };
-
-    const paths: string[] = [];
-    for (const feat of indiaGeo.features || []) {
-      const geom = feat.geometry;
-      if (!geom) continue;
-      if (geom.type === "Polygon") {
-        for (const ring of geom.coordinates) {
-          const d = ring
-            .map(([lon, lat]: [number, number], i: number) => {
-              const [x, y] = proj(lon, lat);
-              return `${i === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
-            })
-            .join(" ");
-          paths.push(`${d} Z`);
-        }
-      } else if (geom.type === "MultiPolygon") {
-        for (const poly of geom.coordinates) {
-          for (const ring of poly) {
-            const d = ring
-              .map(([lon, lat]: [number, number], i: number) => {
-                const [x, y] = proj(lon, lat);
-                return `${i === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
-              })
-              .join(" ");
-            paths.push(`${d} Z`);
-          }
-        }
-      }
-    }
-
-    if (paths.length === 0) return null;
-
-    return (
-      <svg className="india-border-overlay" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
-        {paths.map((d, i) => (
-          <path key={i} d={d} className="india-border" />
-        ))}
-      </svg>
-    );
-  }, [indiaGeo, metadata]);
+  
 
   const metricRows = [
     { key: "ssim", label: "SSIM", higherIsBetter: true },
@@ -358,7 +298,6 @@ export default function Home() {
                   <div className="map-frame-label map-west">{westLabel}</div>
                   <div className="map-frame-label map-east">{eastLabel}</div>
                   <img src={frameUrl} alt={`Forecast lead ${selectedLead} minutes`} className="forecast-image" />
-                  {indiaSvg}
                   <div className="map-grid" aria-hidden="true" />
                   <div className="image-caption">
                     <strong>{selectedStep === 0 ? "Now" : `+${selectedLead} min`}</strong>
