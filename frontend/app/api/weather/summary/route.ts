@@ -95,27 +95,17 @@ export async function GET(request: Request) {
     lon: 83,
   };
 
-  try {
-    // Fetch weather for all Indian cities
-    const cities = await Promise.all(
-      INDIAN_CITIES.map(async (city) => ({
-        id: city.id,
-        label: city.label,
-        lat: city.lat,
-        lon: city.lon,
-        ...(await fetchOpenMeteo(city.lat, city.lon)),
-      })),
-    );
-
-    return NextResponse.json({
-      source: "open-meteo",
-      center,
-      cities,
-    }, {
-      headers: { "Cache-Control": "no-store" },
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown weather summary error";
-    return NextResponse.json({ error: message }, { status: 502 });
+  // Fetch weather for all Indian cities but tolerate per-city failures
+  const cities: any[] = [];
+  for (const city of INDIAN_CITIES) {
+    try {
+      const data = await fetchOpenMeteo(city.lat, city.lon);
+      cities.push({ id: city.id, label: city.label, lat: city.lat, lon: city.lon, ...data });
+    } catch (err) {
+      // Don't fail entire request for one failing city. Return nulls for that city.
+      cities.push({ id: city.id, label: city.label, lat: city.lat, lon: city.lon, temperature_c: null, humidity_pct: null, wind_kph: null, rain_mm: null, rain_probability_pct: null });
+    }
   }
+
+  return NextResponse.json({ source: "open-meteo", center, cities }, { headers: { "Cache-Control": "no-store" } });
 }
