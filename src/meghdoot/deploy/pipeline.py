@@ -155,6 +155,150 @@ def download_latest_frames(
         return None
 
 
+def get_cached_raw_frames(
+    cfg: dict,
+    n_frames: int = 3,
+) -> list[Path]:
+    """Fetch the latest raw satellite files from local cache."""
+    raw_dir = Path(cfg["data"]["paths"]["raw"])
+    files = sorted(
+        list(raw_dir.rglob("*.h*5"))
+        + list(raw_dir.rglob("*.nc"))
+        + list(raw_dir.rglob("*.nc4")),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[:n_frames]
+
+    if len(files) < n_frames:
+        log.warning(
+            "Raw cache has only %s file(s); requested %s",
+            len(files),
+            n_frames,
+        )
+
+    return sorted(files)
+
+
+def upload_raw_frames_to_gcs(
+    cfg: dict,
+    raw_files: list[Path],
+) -> None:
+    """Mirror freshly downloaded raw files to GCS for reuse on later runs."""
+    bucket_name = cfg.get("deployment", {}).get("gcs_bucket")
+    if not bucket_name:
+        log.warning("No deployment.gcs_bucket configured; cannot upload raw cache to GCS")
+        return
+
+    try:
+        from google.cloud import storage
+    except ImportError:
+        log.warning("google-cloud-storage not installed; skipping raw cache upload")
+        return
+
+    raw_dir = Path(cfg["data"]["paths"]["raw"])
+    gcs_prefix = os.environ.get("MEGHDOOT_RAW_GCS_PREFIX", "raw/").strip().strip("/")
+    if not gcs_prefix:
+        gcs_prefix = "raw"
+
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+
+    uploaded = 0
+    for fp in raw_files:
+        try:
+            rel_path = fp.relative_to(raw_dir).as_posix()
+        except ValueError:
+            rel_path = fp.name
+
+        blob = bucket.blob(f"{gcs_prefix}/{rel_path}")
+        if blob.exists():
+            continue
+
+        blob.upload_from_filename(str(fp))
+        uploaded += 1
+
+    if uploaded:
+        log.info(
+            "Uploaded %s raw frame(s) to gs://%s/%s",
+            uploaded,
+            bucket_name,
+            gcs_prefix,
+        )
+
+
+def get_raw_frames_from_gcs(
+    cfg: dict,
+    n_frames: int = 3,
+) -> list[Path]:
+    """Download latest raw satellite files from GCS into local raw cache."""
+    bucket_name = cfg.get("deployment", {}).get("gcs_bucket")
+    if not bucket_name:
+        log.warning("No deployment.gcs_bucket configured; cannot fetch raw cache from GCS")
+        return []
+
+    try:
+        from google.cloud import storage
+    except ImportError:
+        log.warning("google-cloud-storage not installed; cannot fetch raw cache from GCS")
+        return []
+
+    preferred_prefix = os.environ.get("MEGHDOOT_RAW_GCS_PREFIX", "raw/").strip().strip("/")
+    candidate_prefixes = [preferred_prefix] if preferred_prefix else []
+    for fallback_prefix in ("raw", "data/raw", "meghdoot/raw"):
+        if fallback_prefix not in candidate_prefixes:
+            candidate_prefixes.append(fallback_prefix)
+    candidate_prefixes = [f"{prefix.rstrip('/')}/" for prefix in candidate_prefixes]
+
+    raw_dir = Path(cfg["data"]["paths"]["raw"])
+    ensure_dir(raw_dir)
+
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+
+    blobs: list[Any] = []
+    used_prefix = ""
+    for prefix in candidate_prefixes:
+        prefix_blobs = [
+            blob
+            for blob in bucket.list_blobs(prefix=prefix)
+            if not blob.name.endswith("/") and Path(blob.name).suffix.lower() in {".h5", ".hdf5", ".nc", ".nc4"}
+        ]
+        if prefix_blobs:
+            blobs = prefix_blobs
+            used_prefix = prefix
+            break
+
+    if not blobs:
+        log.warning(
+            "No raw files found in gs://%s under prefixes: %s",
+            bucket_name,
+            ", ".join(candidate_prefixes),
+        )
+        return []
+
+    def blob_sort_key(blob: Any) -> tuple[float, str]:
+        timestamp = getattr(blob, "updated", None) or getattr(blob, "time_created", None)
+        created_value = timestamp.timestamp() if timestamp is not None else 0.0
+        return created_value, blob.name
+
+    latest_blobs = sorted(blobs, key=blob_sort_key, reverse=True)[:n_frames]
+    downloaded: list[Path] = []
+    for blob in latest_blobs:
+        rel_name = blob.name.removeprefix(used_prefix).lstrip("/")
+        destination = raw_dir / rel_name
+        ensure_dir(destination.parent)
+        blob.download_to_filename(str(destination))
+        downloaded.append(destination)
+
+    log.info(
+        "Loaded %s raw frame(s) from gs://%s/%s for fallback",
+        len(downloaded),
+        bucket_name,
+        used_prefix,
+    )
+    return sorted(downloaded)
+
+
 def preprocess_frames(
     cfg: dict,
     raw_files: list[Path],
@@ -317,17 +461,31 @@ def prepare_history_frames(
     in local cache so inference can still run.
     """
     cache_only_mode = os.environ.get("MEGHDOOT_USE_CACHED_PROCESSED_ONLY", "0") == "1"
-    if not cache_only_mode:
-        raw_files = download_latest_frames(cfg, n_frames=n_frames)
+
+    raw_files = get_cached_raw_frames(cfg, n_frames=n_frames)
+    if raw_files:
+        log.info("Using %s cached raw frame(s) from local disk", len(raw_files))
+
+    if not raw_files:
+        raw_files = get_raw_frames_from_gcs(cfg, n_frames=n_frames)
         if raw_files:
-            processed_files = preprocess_frames(cfg, raw_files)
-            if processed_files:
-                return sorted(processed_files)
-            log.warning("Preprocessing fresh raw frames failed; falling back to cache")
+            log.info("Using %s cached raw frame(s) from GCS fallback", len(raw_files))
+
+    if not raw_files and not cache_only_mode:
+        fresh_raw_files = download_latest_frames(cfg, n_frames=n_frames)
+        if fresh_raw_files:
+            upload_raw_frames_to_gcs(cfg, fresh_raw_files)
+            raw_files = fresh_raw_files
         else:
             log.warning("Fresh MOSDAC frames unavailable; falling back to cached processed frames")
-    else:
+    elif not raw_files:
         log.warning("MEGHDOOT_USE_CACHED_PROCESSED_ONLY=1: skipping MOSDAC download")
+
+    if raw_files:
+        processed_files = preprocess_frames(cfg, raw_files)
+        if processed_files:
+            return sorted(processed_files)
+        log.warning("Preprocessing raw frames failed; falling back to processed cache")
 
     cached_files = get_cached_processed_frames(cfg, n_frames=n_frames)
     if cached_files:
