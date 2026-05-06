@@ -42,8 +42,10 @@ from meghdoot.deploy.runtime import (
     prepare_backend_config,
 )
 from meghdoot.deploy.pipeline import (
+    download_forecast_data,
     generate_forecast_sequence,
     prepare_history_frames,
+    preprocess_frames,
     publish_to_bucket,
 )
 
@@ -362,11 +364,25 @@ async def forecast_nowcast(num_steps: int = 6):
 
                 t0 = time.time()
 
-                processed_files = prepare_history_frames(cfg, n_frames=3)
-                if not processed_files:
-                    log.error("Background run %s: history frame resolution failed", run_id)
+                # Step 1: Download fresh satellite data (MOSDAC-first, cache fallback)
+                log.info("Background run %s: Step 1 - Acquiring forecast data...", run_id)
+                raw_files = download_forecast_data(cfg, n_frames=3)
+                if not raw_files:
+                    log.error("Background run %s: failed to acquire satellite data", run_id)
                     return
 
+                # Step 2: Preprocess raw files to tensors (with cache fallback)
+                log.info("Background run %s: Step 2 - Preprocessing to tensors...", run_id)
+                processed_files = preprocess_frames(cfg, raw_files)
+                if not processed_files:
+                    log.warning("Background run %s: preprocessing failed; attempting cached tensors...", run_id)
+                    processed_files = prepare_history_frames(cfg, n_frames=3)
+                    if not processed_files:
+                        log.error("Background run %s: failed to obtain processed tensors", run_id)
+                        return
+
+                # Step 3: Generate forecast
+                log.info("Background run %s: Step 3 - Generating forecast (%d steps)...", run_id, num_steps)
                 forecast_frames = generate_forecast_sequence(
                     cfg, vae, diffusion, processed_files, num_steps=num_steps, device=device
                 )
@@ -374,13 +390,15 @@ async def forecast_nowcast(num_steps: int = 6):
                     log.error("Background run %s: inference failed", run_id)
                     return
 
+                # Step 4: Publish to bucket
+                log.info("Background run %s: Step 4 - Publishing forecast...", run_id)
                 if not publish_to_bucket(cfg, forecast_frames):
                     log.error("Background run %s: publishing failed", run_id)
                     return
 
                 total_time = time.time() - t0
                 log.info(
-                    "Background run %s completed: %d steps in %.2fs",
+                    "Background run %s completed: %d steps in %.2fs ✓",
                     run_id,
                     len(forecast_frames),
                     total_time,
