@@ -381,15 +381,39 @@ def generate_forecast_sequence(
         # Load the newest available frames.
         history_tensors = []
         for fp in sorted(processed_files)[-3:]:
-            t = torch.load(fp, map_location=device)  # [2, H, W]
+            t = torch.load(fp, map_location=device)  # Expected [2, H, W]
             log.debug(f"Loaded tensor from {fp.name}: shape={t.shape}, dtype={t.dtype}, device={t.device}")
+            
+            # Normalize: if tensor is latent space [1, 4, 64, 64], decode it back to pixel space
+            if t.ndim == 4 and t.shape[1] == 4:
+                log.warning(f"Loaded tensor from {fp.name} appears to be in latent space {t.shape}; decoding to pixel space")
+                try:
+                    t = vae.decode(t)  # [1, 1, 2, H, W] or [1, 2, H, W]
+                    if t.ndim == 5:
+                        t = t.squeeze(1)  # [1, 2, H, W] -> [2, H, W]? No, this removes wrong dim
+                    if t.ndim == 5 and t.shape[1] == 2:  # [1, 2, H, W] expected but got [1, 2, H, W]
+                        t = t.squeeze(0)  # [2, H, W]
+                    elif t.ndim == 5 and t.shape[0] == 1:  # [1, ?, ?, ?, ?]
+                        t = t.squeeze(0)  # [?, ?, ?, ?]
+                    log.debug(f"Decoded latent tensor to pixel space: {t.shape}")
+                except Exception as e:
+                    log.error(f"Failed to decode latent tensor from {fp.name}: {e}")
+                    raise
+            elif t.ndim == 5:
+                log.warning(f"Loaded tensor from {fp.name} has unexpected 5 dimensions {t.shape}; squeezing batch dim")
+                t = t.squeeze(0)
+            
+            if t.ndim != 3 or t.shape[0] != 2:
+                log.error(f"Normalized tensor from {fp.name} has unexpected shape {t.shape}; expected [2, H, W]")
+                raise ValueError(f"Invalid tensor shape: {t.shape}")
+            
             history_tensors.append(t)
         
         if not history_tensors:
             log.error("Need at least 1 history frame, got 0")
             return None
 
-        log.debug(f"Loaded {len(history_tensors)} history tensors. Shapes: {[t.shape for t in history_tensors]}")
+        log.debug(f"Loaded {len(history_tensors)} history tensors. All normalized to pixel space. Shapes: {[t.shape for t in history_tensors]}")
 
         if len(history_tensors) < 3:
             missing = 3 - len(history_tensors)
@@ -408,21 +432,32 @@ def generate_forecast_sequence(
             history_latent_list = []
             for i in range(3):
                 frame = history_pixel[:, i]  # [1, 2, H, W]
-                log.debug(f"Encoding frame {i}: shape={frame.shape}, device={frame.device}")
+                log.debug(f"Encoding frame {i}: shape={frame.shape}, dtype={frame.dtype}, device={frame.device}")
                 try:
                     z = vae.encode(frame)  # [1, 4, 64, 64]
-                    log.debug(f"Encoded frame {i}: shape={z.shape}")
+                    if z.ndim != 4 or z.shape != torch.Size([1, 4, 64, 64]):
+                        log.warning(f"Frame {i} encoded to unexpected shape {z.shape}; expected [1, 4, 64, 64]")
+                    log.debug(f"Encoded frame {i}: shape={z.shape}, dtype={z.dtype}")
                     history_latent_list.append(z)
                 except Exception as e:
-                    log.error(f"Failed to encode frame {i}: {e}")
+                    log.error(f"Failed to encode frame {i} (shape={frame.shape}): {e}")
                     raise
             
-            log.debug(f"Before cat: {len(history_latent_list)} latents, shapes: {[z.shape for z in history_latent_list]}")
+            log.debug(f"Before cat: {len(history_latent_list)} latents, shapes: {[z.shape for z in history_latent_list]}, dtypes: {[z.dtype for z in history_latent_list]}")
+            
+            # Validate all latents have same shape
+            if history_latent_list:
+                first_shape = history_latent_list[0].shape
+                for i, z in enumerate(history_latent_list):
+                    if z.shape != first_shape:
+                        log.error(f"Shape mismatch: latent {i} has shape {z.shape}, expected {first_shape}")
+                        raise ValueError(f"Inconsistent latent shapes: {[z.shape for z in history_latent_list]}")
+            
             try:
                 history_latent = torch.cat(history_latent_list, dim=0).unsqueeze(0)  # [1, 3, 4, 64, 64]
-                log.debug(f"history_latent after cat+unsqueeze: {history_latent.shape}")
-            except Exception as e:
-                log.error(f"Failed to concatenate latents: {e}. Shapes: {[z.shape for z in history_latent_list]}")
+                log.debug(f"history_latent after cat+unsqueeze: shape={history_latent.shape}, dtype={history_latent.dtype}")
+            except RuntimeError as e:
+                log.error(f"torch.cat failed. Latent list: shapes={[z.shape for z in history_latent_list]}, ndims={[z.ndim for z in history_latent_list]}, dtypes={[z.dtype for z in history_latent_list]}, devices={[z.device for z in history_latent_list]}")
                 raise
         
         # Generate forecast sequence
