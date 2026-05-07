@@ -181,54 +181,52 @@ def download_latest_frames(
                 end_date or "<default>",
             )
 
-            downloaded_files = client.bulk_download(
-                dataset_id=dataset_id,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            if downloaded_files:
-                ordered_files = sorted(
-                    downloaded_files,
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )[:n_frames]
-                observation_time = client.last_download_observation_time or latest_file_timestamp(ordered_files)
-                return ordered_files, observation_time
-            log.warning("MOSDAC search completed but produced no usable files")
+            # Try the configured window first, then progressively smaller
+            # UTC lookback windows if MOSDAC rejects the request or returns
+            # no files. This protects against MOSDAC "Bad Input Value"
+            # errors for overly large windows (observed in the wild).
+            candidate_windows: list[tuple[str, str]] = []
+            if start_date or end_date:
+                candidate_windows.append((start_date or "", end_date or ""))
+
+            now = datetime.utcnow().replace(microsecond=0)
+            for hours in (24, 12, 6, 3, 1):
+                start_time = now - timedelta(hours=hours)
+                candidate_windows.append(
+                    (
+                        start_time.isoformat(timespec="seconds") + "Z",
+                        now.isoformat(timespec="seconds") + "Z",
+                    )
+                )
+
+            for idx, (window_start, window_end) in enumerate(candidate_windows):
+                try:
+                    log.info(
+                        "MOSDAC try %s: start=%s end=%s",
+                        idx + 1,
+                        window_start or "<unset>",
+                        window_end or "<unset>",
+                    )
+                    downloaded_files = client.bulk_download(
+                        dataset_id=dataset_id,
+                        start_date=window_start or None,
+                        end_date=window_end or None,
+                    )
+                except Exception as exc:
+                    log.warning("MOSDAC attempt %s failed: %s", idx + 1, exc)
+                    downloaded_files = []
+
+                if downloaded_files:
+                    ordered_files = sorted(
+                        downloaded_files,
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )[:n_frames]
+                    observation_time = client.last_download_observation_time or latest_file_timestamp(ordered_files)
+                    return ordered_files, observation_time
+
+            log.warning("MOSDAC search completed but produced no usable files for any candidate window")
             return None
-                # Try the configured window first, then progressively smaller
-                # UTC lookback windows if MOSDAC rejects the request or returns
-                # no files. This protects against MOSDAC "Bad Input Value"
-                # errors for overly large windows (observed in the wild).
-                candidate_windows: list[tuple[str, str]] = []
-                if start_date or end_date:
-                    candidate_windows.append((start_date or "", end_date or ""))
-
-                now = datetime.utcnow().replace(microsecond=0)
-                for hours in (24, 12, 6, 3, 1):
-                    s = (now - timedelta(hours=hours)).isoformat() + "Z"
-                    e = now.isoformat() + "Z"
-                    candidate_windows.append((s, e))
-
-                for idx, (s, e) in enumerate(candidate_windows):
-                    try:
-                        log.info("MOSDAC try %s: start=%s end=%s", idx + 1, s or "<unset>", e or "<unset>")
-                        downloaded_files = client.bulk_download(
-                            dataset_id=dataset_id,
-                            start_date=s or None,
-                            end_date=e or None,
-                        )
-                    except Exception as exc:
-                        log.warning("MOSDAC attempt %s failed: %s", idx + 1, exc)
-                        downloaded_files = []
-
-                    if downloaded_files:
-                        ordered_files = sorted(downloaded_files, key=lambda p: p.stat().st_mtime, reverse=True)[:n_frames]
-                        observation_time = client.last_download_observation_time or latest_file_timestamp(ordered_files)
-                        return ordered_files, observation_time
-
-                log.warning("MOSDAC search completed but produced no usable files for any candidate window")
-                return None
         finally:
             client.logout()
         
