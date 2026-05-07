@@ -381,7 +381,7 @@ async def forecast_nowcast(num_steps: int = 6):
                 if not download_result:
                     log.error("Background run %s: failed to acquire satellite data", run_id)
                     return
-                raw_files, observation_time = download_result
+                raw_files, observation_time, source_metadata = download_result
 
                 # Step 2: Preprocess raw files to tensors (with cache fallback)
                 log.info("Background run %s: Step 2 - Preprocessing to tensors...", run_id)
@@ -411,6 +411,7 @@ async def forecast_nowcast(num_steps: int = 6):
                     observation_time=observation_time,
                     current_observation=current_observation,
                     forecast_latents=forecast_latents,
+                    source_metadata=source_metadata,
                 ):
                     log.error("Background run %s: publishing failed", run_id)
                     return

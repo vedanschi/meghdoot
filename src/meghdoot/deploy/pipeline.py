@@ -57,6 +57,13 @@ def latest_file_timestamp(files: list[Path]) -> Optional[datetime]:
     return datetime.utcfromtimestamp(newest_mtime).replace(microsecond=0)
 
 
+def _is_stale(observation_time: Optional[datetime], max_staleness_hours: int) -> bool:
+    """Return True if observation time is older than the allowed freshness window."""
+    if observation_time is None:
+        return True
+    return (datetime.utcnow() - observation_time) > timedelta(hours=max_staleness_hours)
+
+
 def normalize_to_image(arr: np.ndarray) -> np.ndarray:
     """Convert [-1, 1] normalized array to [0, 255] uint8 for PNG.
     
@@ -181,21 +188,19 @@ def download_latest_frames(
                 end_date or "<default>",
             )
 
-            # Try the configured window first, then progressively smaller
-            # UTC lookback windows if MOSDAC rejects the request or returns
-            # no files. This protects against MOSDAC "Bad Input Value"
-            # errors for overly large windows (observed in the wild).
+            # Try configured window first, then date-only windows. MOSDAC
+            # has rejected timestamp-based ranges with HTTP 400 in production.
             candidate_windows: list[tuple[str, str]] = []
             if start_date or end_date:
                 candidate_windows.append((start_date or "", end_date or ""))
 
-            now = datetime.utcnow().replace(microsecond=0)
-            for hours in (24, 12, 6, 3, 1):
-                start_time = now - timedelta(hours=hours)
+            today = datetime.utcnow().date()
+            for days_back in (0, 1, 2, 3, 7):
+                start_time = today - timedelta(days=days_back)
                 candidate_windows.append(
                     (
-                        start_time.isoformat(timespec="seconds") + "Z",
-                        now.isoformat(timespec="seconds") + "Z",
+                        start_time.strftime("%Y-%m-%d"),
+                        today.strftime("%Y-%m-%d"),
                     )
                 )
 
@@ -309,18 +314,18 @@ def upload_raw_frames_to_gcs(
 def get_raw_frames_from_gcs(
     cfg: dict,
     n_frames: int = 3,
-) -> list[Path]:
+) -> tuple[list[Path], Optional[datetime], list[str]]:
     """Download latest raw satellite files from GCS into local raw cache."""
     bucket_name = cfg.get("deployment", {}).get("gcs_bucket")
     if not bucket_name:
         log.warning("No deployment.gcs_bucket configured; cannot fetch raw cache from GCS")
-        return []
+        return [], None, []
 
     try:
         from google.cloud import storage
     except ImportError:
         log.warning("google-cloud-storage not installed; cannot fetch raw cache from GCS")
-        return []
+        return [], None, []
 
     preferred_prefix = os.environ.get("MEGHDOOT_RAW_GCS_PREFIX", "raw/").strip().strip("/")
     candidate_prefixes = [preferred_prefix] if preferred_prefix else []
@@ -336,17 +341,13 @@ def get_raw_frames_from_gcs(
     bucket = client.bucket(bucket_name)
 
     blobs: list[Any] = []
-    used_prefix = ""
     for prefix in candidate_prefixes:
         prefix_blobs = [
             blob
             for blob in bucket.list_blobs(prefix=prefix)
             if not blob.name.endswith("/") and Path(blob.name).suffix.lower() in {".h5", ".hdf5", ".nc", ".nc4"}
         ]
-        if prefix_blobs:
-            blobs = prefix_blobs
-            used_prefix = prefix
-            break
+        blobs.extend(prefix_blobs)
 
     if not blobs:
         log.warning(
@@ -354,7 +355,7 @@ def get_raw_frames_from_gcs(
             bucket_name,
             ", ".join(candidate_prefixes),
         )
-        return []
+        return [], None, []
 
     def blob_sort_key(blob: Any) -> tuple[float, str]:
         timestamp = getattr(blob, "updated", None) or getattr(blob, "time_created", None)
@@ -362,21 +363,27 @@ def get_raw_frames_from_gcs(
         return created_value, blob.name
 
     latest_blobs = sorted(blobs, key=blob_sort_key, reverse=True)[:n_frames]
+    latest_blobs = list(reversed(latest_blobs))
     downloaded: list[Path] = []
+    blob_names: list[str] = []
     for blob in latest_blobs:
-        rel_name = blob.name.removeprefix(used_prefix).lstrip("/")
+        rel_name = blob.name
         destination = raw_dir / rel_name
         ensure_dir(destination.parent)
         blob.download_to_filename(str(destination))
         downloaded.append(destination)
+        blob_names.append(blob.name)
+
+    newest_blob = max(latest_blobs, key=blob_sort_key)
+    newest_ts = getattr(newest_blob, "updated", None) or getattr(newest_blob, "time_created", None)
+    observation_time = newest_ts.replace(tzinfo=None) if newest_ts is not None else None
 
     log.info(
-        "Loaded %s raw frame(s) from gs://%s/%s for fallback",
+        "Loaded %s raw frame(s) from gs://%s (merged prefixes)",
         len(downloaded),
         bucket_name,
-        used_prefix,
     )
-    return sorted(downloaded)
+    return downloaded, observation_time, blob_names
 
 
 def preprocess_frames(
@@ -533,7 +540,7 @@ def get_processed_frames_from_gcs(
 def download_forecast_data(
     cfg: dict,
     n_frames: int = 3,
-) -> Optional[tuple[list[Path], Optional[datetime]]]:
+) -> Optional[tuple[list[Path], Optional[datetime], dict[str, Any]]]:
     """Download fresh satellite data for forecast.
     
     Prioritization order (MOSDAC first, cache fallback only):
@@ -547,44 +554,80 @@ def download_forecast_data(
         Raw file paths from whichever source succeeded
     """
     cache_only_mode = os.environ.get("MEGHDOOT_USE_CACHED_PROCESSED_ONLY", "0") == "1"
-    
-    # Try fresh MOSDAC download FIRST unless cache-only mode
-    if not cache_only_mode:
-        fresh_download = download_latest_frames(cfg, n_frames=n_frames)
-        if fresh_download:
-            fresh_raw_files, observation_time = fresh_download
-            log.info(
-                "✓ Download successful: acquired %s fresh frame(s) from MOSDAC",
-                len(fresh_raw_files),
-            )
-            # Mirror to GCS for future cache fallback
-            upload_raw_frames_to_gcs(cfg, fresh_raw_files)
-            return fresh_raw_files, observation_time
-        log.warning("MOSDAC download failed; attempting cache fallback...")
-    else:
-        log.info("Cache-only mode enabled: skipping MOSDAC download")
-    
-    # Fallback 1: Try GCS cache
-    gcs_raw_files = get_raw_frames_from_gcs(cfg, n_frames=n_frames)
-    if gcs_raw_files:
-        observation_time = latest_file_timestamp(gcs_raw_files)
-        log.info(
-            "⊝ Download fallback (GCS): using %s cached raw frame(s) from GCS",
-            len(gcs_raw_files),
-        )
-        return gcs_raw_files, observation_time
-    
-    # Fallback 2: Try local cache
-    local_raw_files = get_cached_raw_frames(cfg, n_frames=n_frames)
-    if local_raw_files:
-        observation_time = latest_file_timestamp(local_raw_files)
-        log.warning(
-            "⊝ Download fallback (local): using %s cached raw frame(s) from local disk",
-            len(local_raw_files),
-        )
-        return local_raw_files, observation_time
-    
-    log.error("All download attempts failed (MOSDAC, GCS, local cache)")
+    max_staleness_hours = int(os.environ.get("MEGHDOOT_MAX_STALENESS_HOURS", "48"))
+    source_priority_raw = os.environ.get("MEGHDOOT_FORECAST_SOURCE_PRIORITY", "gcs,mosdac,local")
+    source_priority = [s.strip().lower() for s in source_priority_raw.split(",") if s.strip()]
+    if not source_priority:
+        source_priority = ["gcs", "mosdac", "local"]
+
+    stale_candidates: list[tuple[list[Path], Optional[datetime], dict[str, Any]]] = []
+
+    for source in source_priority:
+        if source == "mosdac":
+            if cache_only_mode:
+                continue
+            fresh_download = download_latest_frames(cfg, n_frames=n_frames)
+            if not fresh_download:
+                continue
+            raw_files, observation_time = fresh_download
+            source_meta = {
+                "data_source": "mosdac",
+                "raw_files_used": [str(p.name) for p in raw_files],
+                "raw_newest_timestamp": observation_time.isoformat() if observation_time else None,
+                "is_stale_fallback": False,
+            }
+            if _is_stale(observation_time, max_staleness_hours):
+                source_meta["is_stale_fallback"] = True
+                stale_candidates.append((raw_files, observation_time, source_meta))
+                log.warning("MOSDAC data is stale; searching fresher source")
+                continue
+
+            upload_raw_frames_to_gcs(cfg, raw_files)
+            return raw_files, observation_time, source_meta
+
+        if source == "gcs":
+            gcs_raw_files, observation_time, blob_names = get_raw_frames_from_gcs(cfg, n_frames=n_frames)
+            if not gcs_raw_files:
+                continue
+            source_meta = {
+                "data_source": "gcs_raw",
+                "raw_files_used": blob_names,
+                "raw_newest_timestamp": observation_time.isoformat() if observation_time else None,
+                "is_stale_fallback": False,
+            }
+            if _is_stale(observation_time, max_staleness_hours):
+                source_meta["is_stale_fallback"] = True
+                stale_candidates.append((gcs_raw_files, observation_time, source_meta))
+                log.warning("GCS raw data is stale; searching fresher source")
+                continue
+            return gcs_raw_files, observation_time, source_meta
+
+        if source == "local":
+            local_raw_files = get_cached_raw_frames(cfg, n_frames=n_frames)
+            if not local_raw_files:
+                continue
+            observation_time = latest_file_timestamp(local_raw_files)
+            source_meta = {
+                "data_source": "local_raw",
+                "raw_files_used": [str(p.name) for p in local_raw_files],
+                "raw_newest_timestamp": observation_time.isoformat() if observation_time else None,
+                "is_stale_fallback": False,
+            }
+            if _is_stale(observation_time, max_staleness_hours):
+                source_meta["is_stale_fallback"] = True
+                stale_candidates.append((local_raw_files, observation_time, source_meta))
+                log.warning("Local raw cache is stale")
+                continue
+            return local_raw_files, observation_time, source_meta
+
+    if stale_candidates:
+        stale_candidates.sort(key=lambda item: item[1] or datetime.min, reverse=True)
+        raw_files, observation_time, source_meta = stale_candidates[0]
+        source_meta["is_stale_fallback"] = True
+        log.warning("Using stale fallback from %s", source_meta.get("data_source"))
+        return raw_files, observation_time, source_meta
+
+    log.error("All download attempts failed (configured sources: %s)", ",".join(source_priority))
     return None
 
 
@@ -835,6 +878,7 @@ def publish_to_bucket(
     observation_time: Optional[datetime] = None,
     current_observation: Optional[np.ndarray] = None,
     forecast_latents: Optional[list] = None,
+    source_metadata: Optional[dict[str, Any]] = None,
 ) -> bool:
     """Publish forecast results to GCS bucket.
     
@@ -895,6 +939,8 @@ def publish_to_bucket(
             "model": "meghdoot-ai-diffusion",
             "inference_steps": cfg["diffusion"]["inference"].get("num_inference_steps", 50),
         }
+        if source_metadata:
+            metadata.update(source_metadata)
         
         # Upload metadata
         metadata_blob = bucket.blob("forecasts/latest/metadata.json")
@@ -971,7 +1017,7 @@ def main() -> int:
     if not download_result:
         log.error("Pipeline failed to acquire any satellite data")
         return 1
-    raw_files, observation_time = download_result
+    raw_files, observation_time, source_metadata = download_result
     
     # Step 1b: Preprocess raw files to tensors (with cache fallback if preprocessing fails)
     log.info("Step 2: Preprocessing to tensors...")
@@ -1024,6 +1070,7 @@ def main() -> int:
         observation_time=observation_time,
         current_observation=current_observation,
         forecast_latents=forecast_latents,
+        source_metadata=source_metadata,
     ):
         log.error("Pipeline failed at publishing step")
         return 1
