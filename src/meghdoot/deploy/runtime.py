@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import re
 import os
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -56,7 +57,8 @@ def _current_mosdac_window() -> dict[str, str]:
     to the current UTC date each run.
     """
     end_time = datetime.utcnow()
-    start_time = end_time.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Use previous day as the start to cover (yesterday..today)
+    start_time = (end_time - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return {
         "start": start_time.strftime("%Y-%m-%d"),
         "end": end_time.strftime("%Y-%m-%d"),
@@ -104,6 +106,31 @@ def prepare_backend_config(cfg: dict[str, Any]) -> dict[str, Any]:
         }
     else:
         data_cfg["date_range"] = _current_mosdac_window()
+
+    # Persist the live date-only window into configs/mosdac_config.json so
+    # tools that read that file (e.g., the official MOSDAC script) will
+    # query the same date window. Format: YYYY-MM-DD (yesterday..today).
+    try:
+        project_root = Path(__file__).resolve().parents[3]
+        mosdac_cfg_path = project_root / "configs" / "mosdac_config.json"
+        if mosdac_cfg_path.exists():
+            try:
+                with open(mosdac_cfg_path, "r", encoding="utf-8") as f:
+                    mosdac_json = json.load(f)
+
+                sp = mosdac_json.get("search_parameters", {})
+                sp["startTime"] = data_cfg["date_range"].get("start", "")
+                sp["endTime"] = data_cfg["date_range"].get("end", "")
+                mosdac_json["search_parameters"] = sp
+
+                with open(mosdac_cfg_path, "w", encoding="utf-8") as f:
+                    json.dump(mosdac_json, f, indent=2)
+
+                log.info("Updated MOSDAC config window in %s", mosdac_cfg_path)
+            except Exception as e:  # pragma: no cover - best-effort persistence
+                log.warning("Could not write mosdac_config.json: %s", e)
+    except Exception:
+        pass
 
     api_port = os.environ.get("PORT")
     if api_port:
