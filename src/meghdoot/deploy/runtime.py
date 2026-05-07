@@ -51,14 +51,15 @@ def _apply_path_override(cfg: dict[str, Any], section: str, key: str, value: Pat
 def _current_mosdac_window() -> dict[str, str]:
     """Return a live UTC search window for MOSDAC queries.
 
-    The search window starts at 00:00 UTC of the current day and ends at
-    the current UTC timestamp so each run always queries fresh data.
+    MOSDAC appears to accept date-only values for this endpoint, so the
+    runtime window stays in ``YYYY-MM-DD`` format while still advancing
+    to the current UTC date each run.
     """
-    end_time = datetime.utcnow().replace(microsecond=0)
-    start_time = end_time.replace(hour=0, minute=0, second=0)
+    end_time = datetime.utcnow()
+    start_time = end_time.replace(hour=0, minute=0, second=0, microsecond=0)
     return {
-        "start": start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "end": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "start": start_time.strftime("%Y-%m-%d"),
+        "end": end_time.strftime("%Y-%m-%d"),
     }
 
 
@@ -95,11 +96,11 @@ def prepare_backend_config(cfg: dict[str, Any]) -> dict[str, Any]:
         except ValueError:
             lookback_hours = 24
 
-        end_time = datetime.utcnow().replace(microsecond=0)
+        end_time = datetime.utcnow()
         start_time = end_time - timedelta(hours=lookback_hours)
         data_cfg["date_range"] = {
-            "start": start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "start": start_time.strftime("%Y-%m-%d"),
+            "end": end_time.strftime("%Y-%m-%d"),
         }
     else:
         data_cfg["date_range"] = _current_mosdac_window()
